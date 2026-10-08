@@ -1,0 +1,54 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<qnx xmlns="http://www.qnx.com/schemas/application/1.0">
+    <id>it.feather.browser</id>
+    <configuration name="Device-Debug">
+       <platformArchitecture>armle-v7</platformArchitecture>
+       <asset path="arm/o.le-v7-g/Feather" entry="true" type="Qnx/Elf">Feather</asset>
+    </configuration>
+    <configuration name="Device-Release">
+       <entryPointType>Qnx/Cascades</entryPointType>
+       <platformArchitecture>armle-v7</platformArchitecture>
+       <asset path="arm/o.le-v7/Feather.so" entry="true" type="Qnx/Elf">Feather.so</asset>
+    </configuration>
+    <configuration name="Simulator-Debug">
+       <platformArchitecture>x86</platformArchitecture>
+       <asset path="x86/o-g/Feather" entry="true" type="Qnx/Elf">Feather</asset>
+    </configuration>
+    <name>Feather</name>
+    <versionNumber>1.0.0</versionNumber>
+    <buildId>4</buildId>
+    <description>Light web browser for BlackBerry 10: pages are rendered by your own Feather server.</description>
+    <author>Feather</author>
+    <initialWindow>
+        <autoOrients>false</autoOrients>
+        <systemChrome>none</systemChrome>
+    </initialWindow>
+    <icon>
+        <image>icon.png</image>
+    </icon>
+    <asset path="icon.png">icon.png</asset>
+    <asset path="assets">assets</asset>
+    <!-- Makes Feather a handler for web links (e.g. tapped in an email): the
+         system browser declares the same filter, copied from its manifest
+         (Invoke-Target-Filter: actions=bb.action.OPEN;types=*;uris=http:,https:,...).
+         Received in BrowserController::onInvoked(). -->
+    <invoke-target id="it.feather.browser.open">
+        <type>APPLICATION</type>
+        <invoke-target-name>Feather</invoke-target-name>
+        <icon>
+            <image>icon.png</image>
+        </icon>
+        <filter>
+            <action>bb.action.OPEN</action>
+            <mime-type>*</mime-type>
+            <property var="uris" value="http:,https:"/>
+        </filter>
+    </invoke-target>
+    <permission system="true">run_native</permission>
+    <permission>access_internet</permission>
+    <!-- sound of YouTube videos in the native player (same as YouTubeNative) -->
+    <permission system="true">play_audio</permission>
+    <!-- feather_debug.log lives in shared/misc -->
+    <permission>access_shared</permission>
+    <env var="LD_LIBRARY_PATH" value="app/native/lib:/usr/lib/qt4/lib"/>
+</qnx>

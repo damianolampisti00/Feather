@@ -1,0 +1,25 @@
+# --- never publish: secrets and personal data ---
+server/token.txt
+server/sessions/
+server/downloads/
+server/*.log
+server/.venv*/
+*.local.ps1
+package.config.ps1
+
+# --- build output ---
+client/build/
+client/stage/
+client/Makefile
+*.bar
+*.o
+node_modules/
+
+# --- editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# compiled translations (package.ps1 makes them from client/translations/*.ts)
+client/assets/translations/
