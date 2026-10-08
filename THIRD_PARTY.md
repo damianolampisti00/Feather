@@ -7,6 +7,7 @@ It ships or uses the following components, all under GPL-3.0-compatible licenses
 |---|---|---|---|
 | [mbed TLS](https://github.com/Mbed-TLS/mbedtls) 2.28.9 | `third_party/mbedtls` (headers + prebuilt armv7 library) | TLS 1.2 for the client's connection to the server | Apache-2.0 (`third_party/mbedtls/LICENSE`) |
 | [libjpeg-turbo](https://libjpeg-turbo.org/) 2.0.6 | `third_party/libjpeg-turbo` (headers + armv7 library, built by `tools/build-libjpeg-turbo.sh`) | Fast NEON JPEG decoding of the page frames | IJG + Modified BSD + zlib (`third_party/libjpeg-turbo/LICENSE.md`) |
+| App icon | `client/icon.png` | Home screen icon | Made for Feather by its author (generated with ChatGPT); part of Feather, GPL-3.0 |
 | [Material Symbols](https://fonts.google.com/icons) by Google | `client/assets/images` (rendered PNGs) | Menu and navigation icons | Apache-2.0 (`client/assets/images/LICENSE-material-symbols.txt`) |
 | Mozilla CA certificate bundle, via [curl](https://curl.se/docs/caextract.html) | `client/assets/cacert.pem` | Verifying the server's certificate | MPL-2.0 |
 | [Playwright](https://playwright.dev/), [express](https://expressjs.com/), [ws](https://github.com/websockets/ws), [sharp](https://sharp.pixelplumbing.com/) | server, installed by `npm install` | Headless browser control, HTTP/WebSocket server, frame encoding | Apache-2.0 / MIT / MIT / Apache-2.0 |
