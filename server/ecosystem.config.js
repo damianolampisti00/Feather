@@ -14,7 +14,6 @@ module.exports = {
         // BROWSER_CHANNEL: 'chrome',          // or an installed browser: chrome | msedge
         //                                     // (unset: msedge on Windows, else Playwright's Chromium)
         // FEATHER_TOKEN: '...',               // else one is generated into token.txt at first start
-        // MEDIA_LAN_PORT: '8091',             // home-network video relay (see README.md)
         // More settings: README.md, "Settings".
       },
     },

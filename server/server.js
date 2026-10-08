@@ -1012,15 +1012,8 @@ setInterval(() => {
 
 app.post('/api/image', (req, res) => handleRequest(req, res, true));
 // Streams of videos played natively (see webvideo.js): capability URLs, no
-// token. Optionally also on the home network (MEDIA_LAN_PORT, e.g. 8091; off by
-// default since it opens a port on the LAN: the firewall must
-// let the LAN in, e.g. `sudo ufw allow from 192.168.1.0/24 to any port 8091 proto tcp`).
-const MEDIA_LAN_PORT = parseInt(process.env.MEDIA_LAN_PORT || '0', 10);
-const mediaRelay = webVideo.installMediaRelay(app, {
-  allowPrivate: ALLOW_PRIVATE,
-  lanHost: MEDIA_LAN_PORT ? (process.env.MEDIA_LAN_HOST || webVideo.lanAddress()) : null,
-  lanPort: MEDIA_LAN_PORT,
-});
+// token.
+webVideo.installMediaRelay(app, { allowPrivate: ALLOW_PRIVATE });
 
 // --- WebSocket transport (/ws) ---------------------------------------------
 // One persistent connection per client instead of one HTTP request per
@@ -1268,14 +1261,11 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
       const id = webVideo.addRelay(r.url, await webVideo.relayHeaders(ctx, r));
       const relayPath = `/media/${id}/video.${r.protocol === 'hls' ? 'm3u8' : 'mp4'}`;
       // At home (same public IP): the CDN itself if it takes the phone's bare
-      // request, else the relay over the home network -- a video through the
-      // tunnel can stall the tunnel, and with it this very WebSocket.
-      // Away: the relay through the tunnel, the CDN as the long shot.
+      // request -- spares the tunnel, which a video can stall along with this
+      // very WebSocket. Otherwise the relay, the CDN as the long shot.
       const home = !!peerIp && peerIp === await webVideo.serverPublicIp();
-      const lan = home && mediaRelay.lanBase() ? mediaRelay.lanBase() + relayPath : null;
-      let first = relayPath, second = r.url, how = 'tunnel';
-      if (home && await webVideo.probeDirect(r.url)) { first = r.url; second = lan || relayPath; how = 'direct'; }
-      else if (lan) { first = lan; second = relayPath; how = 'home network'; }
+      let first = relayPath, second = r.url, how = 'relay';
+      if (home && await webVideo.probeDirect(r.url)) { first = r.url; second = relayPath; how = 'direct'; }
       console.log(`[video] ${r.extractor || '?'} ${r.height || '?'}p ${r.protocol} -> ${how} first`);
       sendJson({
         type: 'videoInfo', url, ok: true, title: r.title, width: r.width, height: r.height,
@@ -1338,8 +1328,7 @@ const server = app.listen(PORT, HOST, () => {
   const yes = (b) => (b ? 'on' : 'off');
   console.log(`Optional: scroll deltas ${yes(deltaAvailable)} (sharp + jpegtran), ` +
               `Instagram reels ${yes(fs.existsSync(PARTHDL_PYTHON))} (parth-dl), ` +
-              `web videos ${yes(webVideo.ytdlpAvailable)} (yt-dlp), ` +
-              `home-network video relay ${yes(MEDIA_LAN_PORT > 0)} (MEDIA_LAN_PORT)`);
+              `web videos ${yes(webVideo.ytdlpAvailable)} (yt-dlp)`);
   if (TOKEN.created) {
     console.log('');
     console.log('  New access token (saved in server/token.txt):');

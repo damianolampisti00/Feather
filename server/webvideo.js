@@ -8,9 +8,9 @@
 // Why a relay: such stream URLs are often bound to the IP that asked for them
 // (some carry `ip=<this server>` in a signed query) and/or want the site's
 // headers (some CDNs answer 410 without them), neither of which BB10's
-// MediaPlayer can provide. At home the phone gets the relay straight over the
-// home network (or the CDN itself when that works without headers); away, the
-// relay goes through the Cloudflare tunnel. See resolveWeb in server.js.
+// MediaPlayer can provide. At home the phone gets the CDN itself when that
+// works without headers; otherwise the relay, through the server's own address.
+// See resolveWeb in server.js.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -19,7 +19,6 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
-const express = require('express');
 const { isBlockedAddress } = require('./safeproxy');
 
 const YTDLP_PYTHON = process.env.YTDLP_PYTHON || venvPython(path.join(__dirname, '.venv-ytdlp'));
@@ -251,18 +250,6 @@ setInterval(() => {
   for (const [id, m] of relays) if (Date.now() - m.lastUsed > RELAY_TTL_MS) relays.delete(id);
 }, 10 * 60 * 1000).unref();
 
-// This machine's address on the home network (where the phone is when it
-// shares our public IP), or null: the first private IPv4 of a real interface.
-function lanAddress() {
-  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
-    if (/^(lo|docker|br-|veth|virbr|tun|tap|wg)/.test(name)) continue;
-    for (const a of addrs || []) {
-      if (a.family === 'IPv4' && !a.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address)) return a.address;
-    }
-  }
-  return null;
-}
-
 // At most this many responses streaming at once per video: a player that
 // seeks opens a new request and may leave the old one hanging, and through
 // the Cloudflare tunnel stalled streams hold back everything else on it (on
@@ -270,11 +257,8 @@ function lanAddress() {
 // included, until cloudflared was restarted).
 const MAX_STREAMS_PER_VIDEO = 3;
 
-// Registers GET /media/... on `app` (reached through the tunnel) and, when
-// lanPort is set, on a second listener on the home network: at home the
-// video then goes phone <-> this machine directly, never through the tunnel.
-// -> { lanBase(): 'http://<lan ip>:<port>' once listening, else null }
-function installMediaRelay(app, { allowPrivate, lanHost, lanPort }) {
+// Registers GET /media/... on `app`.
+function installMediaRelay(app, { allowPrivate }) {
   // Upstream connections only to public addresses (same rule as the
   // browser's filtering proxy), checked on the address actually connected to.
   function safeLookup(hostname, options, cb) {
@@ -383,18 +367,6 @@ function installMediaRelay(app, { allowPrivate, lanHost, lanPort }) {
 
   const routes = ['/media/:id/r/:name', '/media/:id/:name'];
   app.get(routes, handle);
-  let lanBase = null;
-  if (lanHost && lanPort) {
-    const lan = express();
-    lan.get(routes, handle);
-    lan.use((req, res) => res.status(404).end());
-    const server = lan.listen(lanPort, lanHost, () => {
-      lanBase = `http://${lanHost}:${lanPort}`;
-      console.log(`[video] media relay also on ${lanBase} (home network)`);
-    });
-    server.on('error', (e) => console.warn(`[video] home-network relay not started: ${e.message}`));
-  }
-  return { lanBase: () => lanBase };
 }
 
-module.exports = { videoAt, resolveWebVideo, relayHeaders, addRelay, serverPublicIp, probeDirect, lanAddress, installMediaRelay, venvPython, ytdlpAvailable, YTDLP_PYTHON };
+module.exports = { videoAt, resolveWebVideo, relayHeaders, addRelay, serverPublicIp, probeDirect, installMediaRelay, venvPython, ytdlpAvailable, YTDLP_PYTHON };

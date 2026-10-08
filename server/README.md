@@ -41,7 +41,6 @@ Feather works without any of these; each one adds something when present.
 | Scroll deltas: while scrolling only the new strip of the page is sent | `sharp` (installed by `npm install`) and `jpegtran` | Whole frames while scrolling |
 | Videos embedded in web pages, played in the phone's native player | yt-dlp in `.venv-ytdlp` | A tap on the video uses the page's own player |
 | Instagram reels in the native player | parth-dl in `.venv-parthdl` | Reels play in the page |
-| Home-network video relay | `MEDIA_LAN_PORT` | Relayed videos go through the server's main address |
 
 YouTube videos play in the native player without any of these: the app asks YouTube
 directly.
@@ -71,14 +70,10 @@ Sites change often: update yt-dlp every now and then
 (`.venv-ytdlp/bin/pip install -U "yt-dlp[default,curl-cffi]"`), or videos stop being found.
 `YTDLP_PYTHON` and `PARTHDL_PYTHON` point to another Python that has them.
 
-**Home-network video relay.** Some video streams only play when fetched through the
-server (they are tied to its IP address or need the site's headers). Normally they go
-through the server's main address; if that is a tunnel, it can be slow for video.
-With `MEDIA_LAN_PORT=8091` the server also offers those streams on the local network,
-and a phone on the same Wi-Fi uses that instead. Allow the port in the firewall for
-your LAN only, e.g. `sudo ufw allow from 192.168.1.0/24 to any port 8091 proto tcp`.
-The stream addresses are unguessable and expire 3 hours after last use, but they need
-no token.
+Some video streams only play when fetched through the server (they are tied to its IP
+address or need the site's headers): the server then relays them at
+`/media/<random id>/...`. These addresses are unguessable and expire 3 hours after last
+use, but they need no token (the phone's video player can't send one).
 
 ## 4. Reaching the server from the phone
 
@@ -154,8 +149,6 @@ Environment variables (all optional):
 | `JPEG_QUALITY` | `40` | Frame quality (higher = sharper and bigger) |
 | `ALLOW_PORTS` | | Extra ports the browser may reach, e.g. `3000,8000` (always: 80, 443, 8080, 8443) |
 | `ALLOW_PRIVATE` | | `1` (or `--allow-private`) lets the browser reach local networks: development only |
-| `MEDIA_LAN_PORT` | `0` (off) | Home-network video relay port, e.g. `8091` |
-| `MEDIA_LAN_HOST` | auto | LAN address announced for the relay |
 | `JPEGTRAN_PATH` | `jpegtran` | jpegtran executable |
 | `YTDLP_PYTHON`, `PARTHDL_PYTHON` | the venvs above | Python with yt-dlp / parth-dl |
 
