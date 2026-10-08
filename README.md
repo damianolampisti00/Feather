@@ -78,8 +78,11 @@ mbed TLS (for TLS 1.2 to the server) and libjpeg-turbo (fast frame decoding).
 
 BlackBerry's signing service has been shut down, so Feather is packaged in development
 mode and has to be side-loaded on a phone in Development Mode
-(Settings > Security and Privacy > Development Mode). Ways that work:
+(Settings > Security and Privacy > Development Mode). A ready-made `.bar` is attached to
+each [release](https://github.com/damianolampisti00/Feather/releases). Ways that work:
 
+- **DBBT** (Desktop BlackBerry Tool, Windows): connect the phone over USB and install
+  the `.bar` from there.
 - **Momentics**: import `client/` as a project and use **Run** (not Debug) on the phone.
 - **Rooted phone**: `package.ps1 -Install` copies the package to the phone over SSH and
   installs it with the system installer (`tools/installbar.sh`). Copy
