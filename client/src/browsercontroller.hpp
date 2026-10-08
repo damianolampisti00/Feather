@@ -351,6 +351,8 @@ private:
     QList<bool> m_pendingQueue; // one entry per in-flight tracked action, its pushHistory flag
     QTimer m_pingTimer;
     QTimer m_reconnectTimer;
+    // Why the server refused the last handshake (token/lockout), until one succeeds.
+    QString m_authError;
     bb::system::InvokeManager *m_invoke;
 
     void applyAuth(QNetworkRequest &req) const;

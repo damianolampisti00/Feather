@@ -1303,7 +1303,11 @@ function handleWsUpgrade(req, socket, head) {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
   const auth = GUARD.check(clientIp(req), m ? m[1] : '');
   if (!auth.ok) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    // 429 while this address is locked out (see guard.js), so the client can
+    // tell "wait" from "wrong token" and stop retrying a bad one.
+    socket.write(auth.retryAfterSec
+      ? `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${auth.retryAfterSec}\r\nConnection: close\r\n\r\n`
+      : 'HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }

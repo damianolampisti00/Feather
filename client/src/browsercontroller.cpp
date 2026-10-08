@@ -56,6 +56,9 @@ const int kPingIntervalMs = 20000;
 // How long to wait after an unexpected disconnect before trying again --
 // mirrors the Android client's own reconnect backoff.
 const int kReconnectDelayMs = 3000;
+// The server locks an address out for 15 minutes after 10 wrong tokens
+// (server/guard.js); while it does, retrying every few seconds is pointless.
+const int kLockedOutRetryMs = 5 * 60 * 1000;
 
 // InnerTube /player clients tried in order for a YouTube video (playYoutube).
 // ANDROID is what YouTubeNative uses on this phone; probed 2026-10-05 from
@@ -459,6 +462,7 @@ void BrowserController::sendPing()
 void BrowserController::onWsOpened()
 {
     m_wsConnected = true;
+    m_authError.clear();
     ++m_connGeneration;
     emit connectedChanged();
     setError(QString());
@@ -500,10 +504,25 @@ void BrowserController::onWsClosed(const QString &reason)
         m_pendingQueue.clear();
         updateLoadingFlag();
     }
-    if (!reason.isEmpty()) {
-        setError(reason);
-        m_reconnectTimer.start(kReconnectDelayMs);
+    if (reason.isEmpty()) return;
+    // The reason carries the server's status line as is ("HTTP/1.1 401 ...").
+    if (reason.contains(" 401 ")) {
+        // Wrong token: retrying it would only get every device on this network
+        // locked out (10 failures). Wait for a new token or server URL
+        // (setToken/setServerUrl reconnect) or the next app start.
+        m_authError = tr("Invalid token: enter it in Settings (top menu; the server shows it when it starts)");
+        setError(m_authError);
+        return;
     }
+    if (reason.contains(" 429 ")) {
+        m_authError = tr("Too many wrong tokens from this network: the server blocks it for 15 minutes");
+        setError(m_authError);
+        m_reconnectTimer.start(kLockedOutRetryMs);
+        return;
+    }
+    m_authError.clear();
+    setError(reason);
+    m_reconnectTimer.start(kReconnectDelayMs);
 }
 
 void BrowserController::updateLoadingFlag()
@@ -534,7 +553,7 @@ void BrowserController::dispatch(const QVariantMap &bodyIn)
 void BrowserController::sendTrackedAction(QVariantMap body, bool pushHistory)
 {
     if (!m_wsConnected) {
-        setError(tr("Server connection unavailable"));
+        setError(m_authError.isEmpty() ? tr("Server connection unavailable") : m_authError);
         return;
     }
     setError(QString());
