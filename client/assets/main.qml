@@ -4,8 +4,9 @@ import bb.multimedia 1.0
 
 Page {
     id: root
-    // Address bar (see addressBar): shown at the top of a page, while
-    // loading and after scrolling up; slides away after scrolling down.
+    // Address bar (see addressBar): moved only by swipes -- away after
+    // swiping up (scrolling down), back after swiping down. Taps, loads and
+    // page changes leave it where it is.
     property int barHeight: 90
     property bool barShown: true
     // Finger travel (px) since the scroll direction last changed.
@@ -250,12 +251,6 @@ Page {
 
     onCreationCompleted: {
         controller.editRequested.connect(root.showEdit)
-        controller.pageChanged.connect(function () {
-            if (controller.scrollY <= 0) root.barShown = true
-        })
-        controller.loadingChanged.connect(function () {
-            if (controller.loading) root.barShown = true
-        })
         controller.downloadRequested.connect(root.showDownload)
         controller.selectRequested.connect(root.showSelect)
         controller.dateRequested.connect(root.showDate)
@@ -464,8 +459,7 @@ Page {
         }
 
         // ---- address bar ----
-        // Slides away while the page scrolls down, back on scrolling up,
-        // at the top of the page and when a new page loads (root.barShown).
+        // Slides away on a swipe up, back on a swipe down (root.barShown).
         Container {
             id: addressBar
             preferredHeight: root.barHeight
