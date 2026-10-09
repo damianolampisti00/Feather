@@ -2,7 +2,7 @@ APP_NAME = Feather
 
 CONFIG += qt warn_on cascades10
 QT += network
-LIBS += -lbbdata -lbbsystem -lbbutility -lbbmultimedia
+LIBS += -lbbdata -lbbsystem -lbbutility -lbbmultimedia -lasound -laudio_manager
 
 INCLUDEPATH += src src/tls
 
@@ -10,13 +10,16 @@ SOURCES += src/main.cpp \
            src/browsercontroller.cpp \
            src/tls/tlsnetworkaccessmanager.cpp \
            src/tls/tlsnetworkreply.cpp \
-           src/tls/wsclient.cpp
+           src/tls/wsclient.cpp \
+           src/audio/audiooutput.cpp
 
 HEADERS += src/browsercontroller.hpp \
            src/tls/tlsnetworkaccessmanager.hpp \
            src/tls/tlsnetworkreply.hpp \
            src/tls/bbportlog.hpp \
-           src/tls/wsclient.hpp
+           src/tls/wsclient.hpp \
+           src/audio/audiooutput.hpp \
+           src/audio/audioring.hpp
 
 # Native TLS 1.2 (mbedTLS 2.28, third_party/mbedtls) for https:// and wss://
 # -- device only: BB10's own OpenSSL/QSslSocket only speaks TLS 1.0. Plain
@@ -30,6 +33,9 @@ device {
     # libjpeg-turbo's NEON decoder for the frames (built by tools/build-libjpeg-turbo.sh)
     INCLUDEPATH += $$quote($$_PRO_FILE_PWD_/../third_party/libjpeg-turbo/include)
     LIBS += $$quote($$_PRO_FILE_PWD_/../third_party/libjpeg-turbo/lib/armv7/libjpeg-turbo.a)
+    # libopus (third_party/opus, BSD): the page's sound (server/pageaudio.js)
+    LIBS += $$quote($$_PRO_FILE_PWD_/../third_party/opus/lib/armv7/libopus.a)
 }
+INCLUDEPATH += $$quote($$_PRO_FILE_PWD_/../third_party/opus/include/opus)
 
 OTHER_FILES += assets/main.qml assets/cacert.pem bar-descriptor.xml

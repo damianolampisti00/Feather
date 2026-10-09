@@ -10,6 +10,7 @@ const { startSafeProxy } = require('./safeproxy');
 const { chromium } = require('playwright');
 const { createDeltaEncoder, deltaAvailable } = require('./deltaframes');
 const webVideo = require('./webvideo');
+const pageAudio = require('./pageaudio');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const ARGS = process.argv.slice(2);
@@ -62,7 +63,11 @@ function getBrowser() {
       proxyRef.current = proxy;
       const opts = {
         headless: true,
-        ignoreDefaultArgs: ['--enable-automation'],
+        // --mute-audio (a Playwright default) is dropped when the page sound
+        // goes to the phone (pageaudio.js); the browser then plays into its
+        // own virtual output, never this machine's speakers.
+        ignoreDefaultArgs: pageAudio.browserOptions ? ['--enable-automation', '--mute-audio'] : ['--enable-automation'],
+        ...(pageAudio.browserOptions ? { env: pageAudio.browserOptions.env } : {}),
         args: [
           '--disable-blink-features=AutomationControlled',
           `--proxy-server=http://127.0.0.1:${proxy.port}`,
@@ -1090,6 +1095,8 @@ webVideo.installMediaRelay(app, { allowPrivate: ALLOW_PRIVATE });
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on('connection', (ws, sessionId, flow, peerIp) => {
+  // Page sound (pageaudio.js) for clients that asked for it with ?audio=1.
+  if (flow && flow.audio) pageAudio.addListener(ws);
   let pendingFrame = null;
   let sendingFrame = false;
   // flow=ack clients confirm every binary frame once decoded ({type:'ack'}).
@@ -1329,6 +1336,7 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
   }
 
   ws.on('close', () => {
+    pageAudio.removeListener(ws);
     if (scrollTimer) clearTimeout(scrollTimer);
     if (settleTimer) clearTimeout(settleTimer);
     if (stallTimer) clearTimeout(stallTimer);
@@ -1374,7 +1382,8 @@ function handleWsUpgrade(req, socket, head) {
   // flow=ack: the client confirms each frame (see the connection handler);
   // older clients don't send it and keep the unpaced behavior.
   // frames=delta: scroll-copy deltas, see deltaframes.js.
-  const flow = { ack: query.get('flow') === 'ack', delta: query.get('frames') === 'delta' && deltaAvailable };
+  const flow = { ack: query.get('flow') === 'ack', delta: query.get('frames') === 'delta' && deltaAvailable,
+                 audio: query.get('audio') === '1' };
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, sessionId, flow, clientIp(req)));
 }
 
@@ -1384,7 +1393,8 @@ const server = app.listen(PORT, HOST, () => {
   const yes = (b) => (b ? 'on' : 'off');
   console.log(`Optional: scroll deltas ${yes(deltaAvailable)} (sharp + jpegtran), ` +
               `Instagram reels ${yes(fs.existsSync(PARTHDL_PYTHON))} (parth-dl), ` +
-              `web videos ${yes(webVideo.ytdlpAvailable)} (yt-dlp)`);
+              `web videos ${yes(webVideo.ytdlpAvailable)} (yt-dlp), ` +
+              `page sound ${yes(pageAudio.audioAvailable)} (parec + opusscript)`);
   if (TOKEN.created) {
     console.log('');
     console.log('  New access token (saved in server/token.txt):');

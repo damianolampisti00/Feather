@@ -41,9 +41,16 @@ Feather works without any of these; each one adds something when present.
 | Scroll deltas: while scrolling only the new strip of the page is sent | `sharp` (installed by `npm install`) and `jpegtran` | Whole frames while scrolling |
 | Videos embedded in web pages, played in the phone's native player | yt-dlp in `.venv-ytdlp` | A tap on the video uses the page's own player |
 | Instagram reels in the native player | parth-dl in `.venv-parthdl` | Reels play in the page |
+| The page's sound on the phone | PulseAudio or PipeWire (`pactl`, `parec`) and `opusscript` (installed by `npm install`) | Pages are silent (videos in the native player keep their sound) |
 
 YouTube videos play in the native player without any of these: the app asks YouTube
 directly.
+
+**Page sound.** The server's browser plays into a virtual output of its own
+(`AUDIO_SINK`, default `feather_audio`, created with `pactl` at start), never this
+machine's speakers; that output is captured, Opus-encoded (96 kbit/s) and sent to the
+phone only while something is audible. The server must run in a user session that has
+PulseAudio or PipeWire (a desktop login, or `loginctl enable-linger` for a headless one).
 
 **jpegtran** comes with libjpeg-turbo:
 
@@ -150,6 +157,7 @@ Environment variables (all optional):
 | `ALLOW_PORTS` | | Extra ports the browser may reach, e.g. `3000,8000` (always: 80, 443, 8080, 8443) |
 | `ALLOW_PRIVATE` | | `1` (or `--allow-private`) lets the browser reach local networks: development only |
 | `JPEGTRAN_PATH` | `jpegtran` | jpegtran executable |
+| `AUDIO_SINK` | `feather_audio` | Name of the virtual output the page sound is captured from |
 | `YTDLP_PYTHON`, `PARTHDL_PYTHON` | the venvs above | Python with yt-dlp / parth-dl |
 
 A phone's session (its tabs and browser) closes after 10 minutes without activity;

@@ -22,6 +22,9 @@
 #include "tls/wsclient.hpp"
 
 class QNetworkAccessManager;
+class AudioOutput;
+class AudioRing;
+struct OpusDecoder;
 namespace bb {
     namespace system { class InvokeManager; class InvokeRequest; }
     namespace cascades { class ArrayDataModel; class DataModel; }
@@ -132,6 +135,7 @@ class BrowserController : public QObject
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
 public:
     explicit BrowserController(QObject *parent = 0);
+    ~BrowserController();
 
     QVariant image() const { return m_image; }
     QString currentUrl() const;
@@ -302,6 +306,7 @@ private:
     // Untracked -- wheel/refresh: fire-and-forget, no history/loading effect,
     // but the resulting image/links/scrollY/title are still applied.
     void sendUntracked(QVariantMap body);
+    void playPageAudio(const QByteArray &data);
     void dispatch(const QVariantMap &body);
     void applyResult(const QVariantMap &map);
     void updateLoadingFlag();
@@ -360,6 +365,12 @@ private:
     bool m_loading;
     QList<bool> m_pendingQueue; // one entry per in-flight tracked action, its pushHistory flag
     QTimer m_pingTimer;
+    // Page sound (server/pageaudio.js): Opus packets -> m_pageAudioRing ->
+    // m_pageAudio, a playback thread (src/audio, shared with Jukeberry).
+    AudioRing *m_pageAudioRing;
+    AudioOutput *m_pageAudio;
+    OpusDecoder *m_opus;
+    QByteArray m_opusPcm;
     QTimer m_liveTimer;
     QString m_liveText;
     QTimer m_reconnectTimer;

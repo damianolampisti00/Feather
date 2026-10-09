@@ -33,6 +33,8 @@
 #include <bb/system/InvokeRequest>
 
 #include "tls/bbportlog.hpp"
+#include "audio/audiooutput.hpp"
+#include <opus.h>
 #ifdef BBPORT_HAVE_NATIVE_TLS
 #include "tls/tlsnetworkaccessmanager.hpp"
 #endif
@@ -169,6 +171,12 @@ BrowserController::BrowserController(QObject *parent) :
 
     m_pingTimer.setInterval(kPingIntervalMs);
     connect(&m_pingTimer, SIGNAL(timeout()), this, SLOT(sendPing()));
+    m_pageAudioRing = new AudioRing(AudioOutput::kBytesPerMs * 2000);
+    m_pageAudio = new AudioOutput(m_pageAudioRing);
+    m_pageAudio->start(QThread::TimeCriticalPriority);
+    int opusErr = 0;
+    m_opus = opus_decoder_create(48000, 2, &opusErr);
+    m_opusPcm.resize(5760 * 4);
     m_liveTimer.setSingleShot(true);
     connect(&m_liveTimer, SIGNAL(timeout()), this, SLOT(sendLive()));
     m_reconnectTimer.setSingleShot(true);
@@ -432,6 +440,8 @@ QUrl BrowserController::wsUrlFor(const QString &serverUrl, const QString &sessio
     u.addQueryItem("flow", "ack");
     // Scroll-copy deltas: see applyDelta, and frames=delta in server.js.
     u.addQueryItem("frames", "delta");
+    // The page's sound, as Opus packets (server/pageaudio.js, playPageAudio).
+    u.addQueryItem("audio", "1");
     return u;
 }
 
@@ -921,8 +931,33 @@ void BrowserController::setError(const QString &e)
     emit errorChanged();
 }
 
+// "MBA1" + seq u32 LE + one 20 ms Opus packet (48 kHz stereo) of the page's
+// sound: decoded straight into the ring the playback thread drains. A pause
+// in the sound just lets the ring run dry; the output then waits for a new
+// start buffer (and gives the audio device back after a while).
+void BrowserController::playPageAudio(const QByteArray &data)
+{
+    if (!m_opus) return;
+    const int n = opus_decode(m_opus, reinterpret_cast<const unsigned char *>(data.constData()) + 8,
+                              data.size() - 8, reinterpret_cast<opus_int16 *>(m_opusPcm.data()), 5760, 0);
+    if (n > 0) m_pageAudioRing->write(m_opusPcm.constData(), n * 4);
+}
+
+BrowserController::~BrowserController()
+{
+    m_pageAudio->requestStop();
+    m_pageAudio->wait(2000);
+    delete m_pageAudio;
+    delete m_pageAudioRing;
+    if (m_opus) opus_decoder_destroy(m_opus);
+}
+
 void BrowserController::onWsBinary(const QByteArray &data)
 {
+    if (data.size() > 8 && data.startsWith("MBA1")) { // page sound, not a frame (no ack)
+        playPageAudio(data);
+        return;
+    }
     // A playing video makes the server's screencast push ~20 frames/s of 40+
     // KB JPEGs. Decoding each one synchronously right here, on the UI thread,
     // fell behind: WsClient queues every frame to this thread with no limit,
