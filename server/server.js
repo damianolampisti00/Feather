@@ -102,18 +102,44 @@ function getBrowser() {
 // Each session can hold several browser TABS (`tabs`, a user-visible list the
 // client can switch between), all sharing the one BrowserContext (so cookies
 // and logins are shared across tabs, like a real browser). Each tab itself
-// has its own `stack`: stack[0] is the page the user navigates, later entries
-// are that tab's OWN popups (window.open / target=_blank, e.g. "Sign in with
-// Google") -- popups belong to the tab that opened them, not the whole
-// session, so opening a popup in tab 2 doesn't affect what's shown in tab 1.
-// The top of a tab's stack is what the client sees for that tab; when a
-// popup closes itself the view falls back to the page underneath.
+// has its own `stack`: stack[0] is the page the user navigates. A page a site
+// opens (window.open / target=_blank, e.g. "Sign in with Google") becomes a
+// TAB of its own, made active, that remembers its opener tab (`opener`):
+// when it closes itself (the end of an OAuth sign-in) the view goes back to
+// the opener. Only when MAX_TABS are already open does it stack on top of
+// the opener tab instead (later stack entries), as before: the top of a
+// tab's stack is what the client sees for that tab.
+// Pages the server opens itself (ownNewPage) never count as popups.
 const sessions = new Map();
 
-function newTab(s) {
-  const tab = { id: randomUUID().slice(0, 8), stack: [], title: '', url: '' };
+function newTab(s, opener = null) {
+  const tab = { id: randomUUID().slice(0, 8), stack: [], title: '', url: '', opener };
   s.tabs.push(tab);
   return tab;
+}
+
+// A page the server opens itself (a new tab, a replacement for a closed
+// one): flagged so context.on('page') doesn't take it for a site's popup.
+async function ownNewPage(s, ctx) {
+  s.creatingPage = (s.creatingPage || 0) + 1;
+  try {
+    return await ctx.newPage();
+  } finally {
+    s.creatingPage--;
+  }
+}
+
+// A popup's tab is gone (its page closed, or it could not render): drop it
+// and, if it was on screen, show the tab that opened it.
+function dropPopupTab(s, tab) {
+  const i = s.tabs.indexOf(tab);
+  if (i < 0) return;
+  s.tabs.splice(i, 1);
+  if (s.activeTabId === tab.id) {
+    const back = s.tabs.find((t) => t.id === tab.opener) || s.tabs[Math.min(i, s.tabs.length - 1)];
+    s.activeTabId = back ? back.id : null;
+  }
+  if (s.tabs.length === 0) s.activeTabId = newTab(s).id; // activePage gives it a page
 }
 
 function findTab(s, id) {
@@ -183,6 +209,7 @@ function trackPage(s, tab, page) {
   page.on('close', () => {
     const i = tab.stack.indexOf(page);
     if (i >= 0) tab.stack.splice(i, 1);
+    if (tab.opener && tab.stack.length === 0) dropPopupTab(s, tab);
   });
 }
 
@@ -198,18 +225,29 @@ function getContext(s) {
       const file = stateFile(s.id);
       if (fs.existsSync(file)) opts.storageState = file;
       const context = await browser.newContext(opts);
-      // A popup belongs to whichever tab opened it (found via its opener page),
-      // so it only affects that one tab's view -- falling back to the active
-      // tab is just a safety net for the (untested) case of no opener at all.
+      // A page a site opened becomes a new active tab that remembers the tab
+      // it came from (via its opener page; else the active tab, e.g. for
+      // rel=noopener links). Pages opened by the server itself (ownNewPage)
+      // are tracked where they were created.
       context.on('page', async (p) => {
-        let tab = null;
-        try { const opener = await p.opener(); if (opener) tab = tabOf(s, opener); } catch (_) {}
-        if (!tab) tab = findTab(s, s.activeTabId);
-        trackPage(s, tab, p);
+        if (s.creatingPage) {
+          trackPage(s, findTab(s, s.activeTabId), p);
+          return;
+        }
+        let from = null;
+        try { const opener = await p.opener(); if (opener) from = tabOf(s, opener); } catch (_) {}
+        if (!from) from = findTab(s, s.activeTabId);
+        if (s.tabs.length < MAX_TABS) {
+          const tab = newTab(s, from.id);
+          s.activeTabId = tab.id;
+          trackPage(s, tab, p);
+        } else {
+          trackPage(s, from, p); // tabs full: on top of its opener, as a popup
+        }
       });
       const firstTab = newTab(s);
       s.activeTabId = firstTab.id;
-      trackPage(s, firstTab, await context.newPage());
+      trackPage(s, firstTab, await ownNewPage(s, context));
       return context;
     })();
   }
@@ -227,7 +265,7 @@ async function activeTab(s) {
 async function activePage(s) {
   const ctx = await getContext(s);
   const tab = await activeTab(s);
-  if (tab.stack.length === 0) trackPage(s, tab, await ctx.newPage()); // main page was closed
+  if (tab.stack.length === 0) trackPage(s, tab, await ownNewPage(s, ctx)); // main page was closed
   return tab.stack[tab.stack.length - 1];
 }
 
@@ -504,8 +542,9 @@ async function usablePage(s, body) {
     } catch (e) {
       const tab = await activeTab(s);
       const i = tab.stack.indexOf(page);
-      if (i <= 0) throw e; // a tab's own main page must work
-      tab.stack.splice(i, 1);
+      if (i <= 0 && !tab.opener) throw e; // a tab's own main page must work
+      if (i >= 0) tab.stack.splice(i, 1);
+      if (tab.opener && tab.stack.length === 0) dropPopupTab(s, tab); // a popup tab that can't render
       page.close().catch(() => {});
     }
   }
@@ -529,6 +568,13 @@ const DATE_LIKE_TYPES = ['date', 'month', 'week', 'time', 'datetime-local'];
 // case is reported generically instead of not at all.
 async function focusedEditable(page) {
   return page.evaluate((DATE_LIKE_TYPES) => {
+    // Where the field is, in viewport CSS px (iframe offsets added): the
+    // client lays its own text field right over it (typing in place).
+    let ox = 0, oy = 0;
+    function box(el) {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(ox + r.left), y: Math.round(oy + r.top), w: Math.round(r.width), h: Math.round(r.height) };
+    }
     function describe(el, depth) {
       if (!el) return null;
       // Custom-element sites (Reddit, ...) keep the real <input>/<textarea>
@@ -545,6 +591,9 @@ async function focusedEditable(page) {
         if (!innerDoc) {
           return { type: 'text', multiline: false, value: '', placeholder: '(campo in un frame esterno)', crossOrigin: true };
         }
+        const fr = el.getBoundingClientRect();
+        ox += fr.left + (el.clientLeft || 0);
+        oy += fr.top + (el.clientTop || 0);
         return describe(innerDoc.activeElement, depth + 1);
       }
       if (el.tagName === 'SELECT') {
@@ -557,7 +606,7 @@ async function focusedEditable(page) {
         // Google & co. use a one-row textarea as their search box: only a tall
         // one is really multi-line (Enter must submit the short ones).
         const tall = el.getBoundingClientRect().height > 70;
-        return { type: 'textarea', multiline: tall, value: el.value,
+        return { type: 'textarea', multiline: tall, value: el.value, rect: box(el),
                  placeholder: el.placeholder || el.getAttribute('aria-label') || '' };
       }
       if (el.tagName === 'INPUT') {
@@ -567,12 +616,13 @@ async function focusedEditable(page) {
                    min: el.min || '', max: el.max || '' };
         }
         if (['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(t)) {
-          return { type: t, multiline: false, value: el.value, placeholder: el.placeholder || el.getAttribute('aria-label') || '' };
+          return { type: t, multiline: false, value: el.value, rect: box(el),
+                   placeholder: el.placeholder || el.getAttribute('aria-label') || '' };
         }
         return null;
       }
       if (el.isContentEditable) {
-        return { type: 'text', multiline: true, value: el.innerText, placeholder: '' };
+        return { type: 'text', multiline: true, value: el.innerText, placeholder: '', rect: box(el) };
       }
       return null;
     }
@@ -837,7 +887,7 @@ async function handle(s, body) {
       const ctx = await getContext(s);
       const tab = newTab(s);
       s.activeTabId = tab.id;
-      trackPage(s, tab, await ctx.newPage());
+      trackPage(s, tab, await ownNewPage(s, ctx));
       page = await usablePage(s, body); // applies zoom/viewport to the new page
     }
     if (withUrl) {
@@ -853,14 +903,16 @@ async function handle(s, body) {
     const closing = findTab(s, body.tabId);
     const idx = s.tabs.indexOf(closing);
     for (const p of closing.stack.slice().reverse()) await p.close().catch(() => {});
-    s.tabs.splice(idx, 1);
-    if (s.tabs.length === 0) {
+    // (a popup tab may already be gone: its pages' close handler drops it)
+    if (s.tabs.indexOf(closing) >= 0) s.tabs.splice(s.tabs.indexOf(closing), 1);
+    if (s.tabs.length === 0 || s.tabs.every((t) => t.stack.length === 0)) {
       // Never end up with zero tabs: replace the last one with a fresh blank tab.
       const ctx = await getContext(s);
+      s.tabs.length = 0;
       const fresh = newTab(s);
-      trackPage(s, fresh, await ctx.newPage());
+      trackPage(s, fresh, await ownNewPage(s, ctx));
     }
-    if (s.activeTabId === closing.id) {
+    if (s.activeTabId === closing.id || !s.tabs.some((t) => t.id === s.activeTabId)) {
       s.activeTabId = s.tabs[Math.min(idx, s.tabs.length - 1)].id;
     }
     page = await usablePage(s, body);

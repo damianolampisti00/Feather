@@ -38,10 +38,11 @@
 #endif
 
 namespace {
-// Visible page area in pixels: 720 (Q5 screen) minus the 90px address bar in
-// main.qml. The server renders exactly this size, so nothing is cropped.
-const int kTileHeight = 630;
-const double kZoomLevels[] = { 1.0, 1.25, 1.5, 2.0 };  // all divide 720 and 630 evenly
+// Page area in pixels: the whole 720x720 Q5 screen. The address bar in
+// main.qml slides over it (and the page moves down while it shows) instead of
+// taking space, so the page never has to be laid out again for it.
+const int kTileHeight = 720;
+const double kZoomLevels[] = { 1.0, 1.25, 1.5, 2.0 };  // all divide 720 evenly
 const int kZoomCount = 4;
 const double kDefaultZoom = 1.5;
 // Where finished downloads go (needs the access_shared permission).
@@ -168,6 +169,8 @@ BrowserController::BrowserController(QObject *parent) :
 
     m_pingTimer.setInterval(kPingIntervalMs);
     connect(&m_pingTimer, SIGNAL(timeout()), this, SLOT(sendPing()));
+    m_liveTimer.setSingleShot(true);
+    connect(&m_liveTimer, SIGNAL(timeout()), this, SLOT(sendLive()));
     m_reconnectTimer.setSingleShot(true);
     connect(&m_reconnectTimer, SIGNAL(timeout()), this, SLOT(reconnectNow()));
 
@@ -650,8 +653,33 @@ void BrowserController::scrollAt(int x, int y, int dx, int dy)
     sendUntracked(body);
 }
 
+void BrowserController::typeLive(const QString &text)
+{
+    m_liveText = text;
+    m_liveTimer.start(150);
+}
+
+void BrowserController::finishLive()
+{
+    if (m_liveTimer.isActive()) {
+        m_liveTimer.stop();
+        sendLive();
+    }
+}
+
+void BrowserController::sendLive()
+{
+    // Untracked: no spinner, no history; the frames show the page reacting.
+    QVariantMap body;
+    body["action"] = "type";
+    body["text"] = m_liveText;
+    body["submit"] = false;
+    sendUntracked(body);
+}
+
 void BrowserController::typeText(const QString &text, bool submit)
 {
+    m_liveTimer.stop();
     QVariantMap body;
     body["action"] = "type";
     body["text"] = text;
@@ -1044,7 +1072,7 @@ DecodedFrame BrowserController::decodeFrame(const QByteArray &msg)
     //
     // libjpeg-turbo (NEON, third_party/libjpeg-turbo, see
     // tools/build-libjpeg-turbo.sh) decodes straight into the ImageData's own
-    // buffer; ImageConverter (~60 ms per 720x630 frame) only remains as the
+    // buffer; ImageConverter (~60 ms per 720x720 frame) only remains as the
     // fallback for anything libjpeg rejects.
     QElapsedTimer t;
     t.start();
@@ -1640,8 +1668,14 @@ void BrowserController::applyResult(const QVariantMap &map)
             emit dateRequested(ed.value("value").toString(), ed.value("min").toString(),
                                ed.value("max").toString(), t);
         } else {
+            const QVariantMap r = ed.value("rect").toMap();
+            const bool known = !r.isEmpty() && r.value("w").toInt() > 0;
             emit editRequested(ed.value("value").toString(), t,
-                               ed.value("placeholder").toString(), ed.value("multiline").toBool());
+                               ed.value("placeholder").toString(), ed.value("multiline").toBool(),
+                               known ? qRound(r.value("x").toDouble() * m_zoom) : -1,
+                               known ? qRound(r.value("y").toDouble() * m_zoom) : -1,
+                               known ? qRound(r.value("w").toDouble() * m_zoom) : 0,
+                               known ? qRound(r.value("h").toDouble() * m_zoom) : 0);
         }
     }
 }

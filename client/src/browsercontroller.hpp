@@ -181,6 +181,12 @@ public:
     // Types text into the field focused on the server (see editRequested).
     // submit=true also presses Enter (search boxes, login forms).
     Q_INVOKABLE void typeText(const QString &text, bool submit);
+    // Typing in place (QML's field laid over the page's): the text so far,
+    // sent to the page's field a moment after the last key (m_liveTimer), so
+    // the site sees it while typing (suggestions); finishLive sends what is
+    // still pending at once.
+    Q_INVOKABLE void typeLive(const QString &text);
+    Q_INVOKABLE void finishLive();
     // The user confirmed / refused the file offered by downloadRequested().
     Q_INVOKABLE void startDownload(const QString &id, const QString &name);
     Q_INVOKABLE void cancelDownload(const QString &id);
@@ -226,9 +232,12 @@ signals:
     void connectedChanged();
     // A click/link turned into a file download on the server: ask the user.
     void downloadRequested(const QString &id, const QString &name);
-    // A tap focused a text field on the page: QML should ask for the text.
+    // A tap focused a text field on the page: QML types in place over it.
+    // x/y/w/h: the field in tile pixels (x < 0: unknown, e.g. a field in
+    // another site's frame -- QML asks with a prompt instead).
     void editRequested(const QString &value, const QString &type,
-                       const QString &placeholder, bool multiline);
+                       const QString &placeholder, bool multiline,
+                       int x, int y, int w, int h);
     // A tap focused a <select>: QML should open the option-picker sheet.
     void selectRequested(bool multiple);
     // A tap focused a date/time field: QML should open the matching picker.
@@ -248,6 +257,7 @@ signals:
     void videoDismissed();
 
 private slots:
+    void sendLive();
     // The system asked us to open a link (tapped in an email, another app...).
     void onInvoked(const bb::system::InvokeRequest &request);
     void onDownloadData();
@@ -350,6 +360,8 @@ private:
     bool m_loading;
     QList<bool> m_pendingQueue; // one entry per in-flight tracked action, its pushHistory flag
     QTimer m_pingTimer;
+    QTimer m_liveTimer;
+    QString m_liveText;
     QTimer m_reconnectTimer;
     // Why the server refused the last handshake (token/lockout), until one succeeds.
     QString m_authError;

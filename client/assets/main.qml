@@ -4,6 +4,19 @@ import bb.multimedia 1.0
 
 Page {
     id: root
+    // Address bar (see addressBar): shown at the top of a page, while
+    // loading and after scrolling up; slides away after scrolling down.
+    property int barHeight: 90
+    property bool barShown: true
+    // Finger travel (px) since the scroll direction last changed.
+    property real barTravel: 0
+    function barAfterScroll(dy) {
+        if (urlField.focused) return
+        if ((dy > 0) != (barTravel > 0)) barTravel = 0
+        barTravel += dy
+        if (barTravel > 40) barShown = false
+        else if (barTravel < -40) barShown = true
+    }
     // Refresh/zoom/server/bookmarks live in BB10's own native app menu here
     // (swipe DOWN from the top bezel to open it -- no button needed, every
     // BB10 app's menu works this way): "A Menu is positioned at the top of
@@ -45,7 +58,11 @@ Page {
     // A tap focused a text field on the page: ask for its text. (Connected in
     // onCreationCompleted -- Cascades has no QtQuick Connections element, and
     // using one here made the whole file fail to load.)
-    function showEdit(value, type, placeholder, multiline) {
+    function showEdit(value, type, placeholder, multiline, x, y, w, h) {
+        if (x >= 0 && w > 0) {
+            root.startInline(value, type, multiline, x, y, w, h)
+            return
+        }
         editPrompt.multi = multiline
         editPrompt.title = placeholder.length > 0 ? placeholder : qsTr("Text")
         editPrompt.inputField.defaultText = value
@@ -57,6 +74,46 @@ Page {
         editPrompt.inputField.inputMode = mode
         editPrompt.confirmButton.label = multiline ? qsTr("OK") : qsTr("Send")
         editPrompt.show()
+    }
+
+    // Typing in place: a native field laid exactly over the page's own one
+    // (x/y/w/h in tile px). Every change goes to the page while typing
+    // (controller.typeLive); Enter submits single-line fields; tapping or
+    // scrolling elsewhere ends it.
+    function startInline(value, type, multiline, x, y, w, h) {
+        inlineEdit.multi = multiline
+        var fw = Math.min(720, Math.max(w, 240))
+        var fx = Math.max(0, Math.min(x, 720 - fw))
+        if (multiline) {
+            var ah = Math.min(400, Math.max(h, 140))
+            inlineArea.preferredWidth = fw
+            inlineArea.preferredHeight = ah
+            inlineAreaPos.positionX = fx
+            inlineAreaPos.positionY = Math.max(0, Math.min(y, 720 - ah))
+            inlineArea.text = value
+        } else {
+            var mode = TextFieldInputMode.Text
+            if (type == "password") mode = TextFieldInputMode.Password
+            else if (type == "email") mode = TextFieldInputMode.EmailAddress
+            else if (type == "url") mode = TextFieldInputMode.Url
+            else if (type == "tel") mode = TextFieldInputMode.PhoneNumber
+            else if (type == "number") mode = TextFieldInputMode.NumbersAndPunctuation
+            inlineField.inputMode = mode
+            inlineField.preferredWidth = fw
+            inlineFieldPos.positionX = fx
+            inlineFieldPos.positionY = Math.max(0, Math.min(y + h / 2 - 42, 720 - 84))
+            inlineField.text = value
+        }
+        inlineEdit.visible = true
+        if (multiline) inlineArea.requestFocus()
+        else inlineField.requestFocus()
+    }
+    function finishInline(submit) {
+        if (!inlineEdit.visible) return
+        inlineEdit.visible = false
+        var text = inlineEdit.multi ? inlineArea.text : inlineField.text
+        if (submit) controller.typeText(text, true)
+        else controller.finishLive()
     }
 
     // A file is being offered by the server: ask before pulling it onto the phone.
@@ -193,6 +250,12 @@ Page {
 
     onCreationCompleted: {
         controller.editRequested.connect(root.showEdit)
+        controller.pageChanged.connect(function () {
+            if (controller.scrollY <= 0) root.barShown = true
+        })
+        controller.loadingChanged.connect(function () {
+            if (controller.loading) root.barShown = true
+        })
         controller.downloadRequested.connect(root.showDownload)
         controller.selectRequested.connect(root.showSelect)
         controller.dateRequested.connect(root.showDate)
@@ -206,235 +269,271 @@ Page {
         layout: DockLayout {}
         background: controller.darkTheme ? Color.create("#121212") : Color.White
 
+        // ---- page tile ----
+        // Always the whole 720x720 screen (the server renders exactly
+        // that, see kTileHeight); while the address bar shows, the page
+        // is pushed down under it instead of being re-laid out.
         Container {
-            // Exactly the screen: bar on top, the rest is the page tile.
+            id: pageArea
             horizontalAlignment: HorizontalAlignment.Fill
             verticalAlignment: VerticalAlignment.Fill
-            layout: StackLayout { orientation: LayoutOrientation.TopToBottom }
+            translationY: root.barShown ? root.barHeight : 0
+            clipContentToBounds: true
+            layout: DockLayout {}
 
-            // ---- address bar ----
-            Container {
-                preferredHeight: 90
-                maxHeight: 90
-                rightPadding: 10
-                layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                background: controller.darkTheme ? Color.create("#222222") : Color.create("#E6E6E6")
-
-                // Bare glyphs (no button frame), dimmed when there is nowhere to go.
-                ImageButton {
-                    defaultImageSource: root.icon("ic_back")
-                    pressedImageSource: root.icon("ic_back")
-                    disabledImageSource: controller.darkTheme ? "asset:///images/ic_back_off.png" : "asset:///images/ic_back_d_off.png"
-                    preferredWidth: 60
-                    preferredHeight: 60
-                    leftMargin: 10
-                    verticalAlignment: VerticalAlignment.Center
-                    enabled: controller.canGoBack
-                    onClicked: controller.back()
-                }
-                ImageButton {
-                    defaultImageSource: root.icon("ic_forward")
-                    pressedImageSource: root.icon("ic_forward")
-                    disabledImageSource: controller.darkTheme ? "asset:///images/ic_forward_off.png" : "asset:///images/ic_forward_d_off.png"
-                    preferredWidth: 60
-                    preferredHeight: 60
-                    leftMargin: 10
-                    verticalAlignment: VerticalAlignment.Center
-                    enabled: controller.canGoForward
-                    onClicked: controller.forward()
-                }
-                TextField {
-                    id: urlField
-                    hintText: controller.connected ? qsTr("URL or search") : qsTr("Connecting to the server...")
-                    text: controller.currentUrl
-                    layoutProperties: StackLayoutProperties { spaceQuota: 1 }
-                    // Centred in the 90px bar like the arrows (it sat at the top).
-                    verticalAlignment: VerticalAlignment.Center
-                    leftMargin: 10
-                    input.submitKey: SubmitKey.Go
-                    input.onSubmitted: controller.go(urlField.text)
-                }
-            }
-
-            // ---- page tile ----
-            Container {
-                layoutProperties: StackLayoutProperties { spaceQuota: 1 }
+            ImageView {
+                id: tile
+                image: controller.image
+                // Fill: a frame always covers the whole tile. Full-size frames
+                // (720x720) are 1:1; the CSS-pixel-sized ones the server sends
+                // mid-scroll at zoom != 1 (e.g. 480x420, same aspect) are
+                // stretched -- soft while moving, sharp again when it stops.
+                scalingMethod: ScalingMethod.Fill
+                // Every frame is a NON-asset image (built from WebSocket
+                // bytes), and for those the default ImageView loadEffect
+                // animates each one as it "loads in" -- the full-screen
+                // animation seen on every update, which at frame rate is the
+                // strobe. None shows each frame instantly, with no effect.
+                loadEffect: ImageViewLoadEffect.None
                 horizontalAlignment: HorizontalAlignment.Fill
-                clipContentToBounds: true
-                layout: DockLayout {}
+                verticalAlignment: VerticalAlignment.Fill
+                // Cascades plays an implicit animation whenever a control's
+                // properties change -- including the image "appearing" on
+                // every new frame. At frame rate those stacked fade/scale
+                // animations ARE the strobing. Disable all implicit
+                // animations so each frame is applied instantly, like a
+                // video surface.
+                implicitLayoutAnimationsEnabled: false
+                attachedObjects: [
+                    ImplicitAnimationController {
+                        propertyName: "ALL"
+                        enabled: false
+                    }
+                ]
+                // The tile is NEVER shifted locally: it only ever shows the
+                // newest server frame, as-is. An earlier build translated it
+                // (translationY) by "finger travel minus the server's last
+                // confirmed scrollY" to hide latency, but frames and the
+                // scrollY number arrive as separate messages, so a frame that
+                // already contained the new scroll was shifted AGAIN by the
+                // stale gap -- the image overshot the finger and snapped back
+                // (the "dragged" look), and scrollY (CSS px) vs the tile (px
+                // at zoom z) don't even match units unless z == 1. Build
+                // 0.1.1.61 retried it properly (each frame tagged with the
+                // scroll it shows, from Page.screencastFrame metadata) and it
+                // still looked bad: the leading edge stays blank for a round
+                // trip (~170 ms via Cloudflare). Removed for good (2026-10-06).
+                property real startX: 0
+                property real startY: 0
+                property real startWinX: 0
+                property real startWinY: 0
+                // Position (in window coords) as of the last Move sample that
+                // actually sent a scroll delta -- deltas sent to
+                // controller.scrollAt() are incremental since THIS point, not
+                // since touch-down (see onTouch's Move branch).
+                property real lastMoveWinX: 0
+                property real lastMoveWinY: 0
+                // Finger travel (px) above which a touch is a swipe, not a
+                // tap. The Q5 is ~330 dpi, so 20px was under normal finger
+                // jitter and every tap was read as a swipe.
+                property int swipeThreshold: 50
+                // Page scrolls this many px per px of finger travel.
+                property real swipeGain: 2.0
+                // True once the current drag has crossed swipeThreshold.
+                property bool scrolling: false
 
-                ImageView {
-                    id: tile
-                    image: controller.image
-                    // Fill: a frame always covers the whole tile. Full-size frames
-                    // (720x630) are 1:1; the CSS-pixel-sized ones the server sends
-                    // mid-scroll at zoom != 1 (e.g. 480x420, same aspect) are
-                    // stretched -- soft while moving, sharp again when it stops.
-                    scalingMethod: ScalingMethod.Fill
-                    // Every frame is a NON-asset image (built from WebSocket
-                    // bytes), and for those the default ImageView loadEffect
-                    // animates each one as it "loads in" -- the full-screen
-                    // animation seen on every update, which at frame rate is the
-                    // strobe. None shows each frame instantly, with no effect.
-                    loadEffect: ImageViewLoadEffect.None
-                    horizontalAlignment: HorizontalAlignment.Fill
-                    verticalAlignment: VerticalAlignment.Fill
-                    // Cascades plays an implicit animation whenever a control's
-                    // properties change -- including the image "appearing" on
-                    // every new frame. At frame rate those stacked fade/scale
-                    // animations ARE the strobing. Disable all implicit
-                    // animations so each frame is applied instantly, like a
-                    // video surface.
-                    implicitLayoutAnimationsEnabled: false
-                    attachedObjects: [
-                        ImplicitAnimationController {
-                            propertyName: "ALL"
-                            enabled: false
+                // No fade/cross-dissolve here (an earlier version had one): with
+                // the server pushing real frames continuously over the open
+                // WebSocket connection (see BrowserController/wsclient.cpp) as
+                // the page actually repaints, an instant swap on every arriving
+                // frame IS what a smooth scroll/video looks like -- a fade would
+                // just soften/blur it. Matches how a real frame-streaming client
+                // renders (see the Android reference client, BrowserView.java:
+                // updateFrame() also just swaps the bitmap and invalidates).
+
+                onTouch: {
+                    if (event.touchType == TouchType.Down) {
+                        root.finishInline(false) // a touch on the page ends typing in place
+                        startX = event.localX
+                        startY = event.localY
+                        startWinX = event.windowX
+                        startWinY = event.windowY
+                        scrolling = false
+                    } else if (event.touchType == TouchType.Move) {
+                        var mx = event.windowX - startWinX
+                        var my = event.windowY - startWinY
+                        if (!scrolling && (Math.abs(mx) > swipeThreshold || Math.abs(my) > swipeThreshold)) {
+                            scrolling = true
+                            // Baseline at the CURRENT event, not touch-down:
+                            // a real swipe's first reported Move sample can
+                            // already be well past swipeThreshold (a fast
+                            // flick covers many px before the first touch
+                            // event lands), so basing the next delta on
+                            // startWinX/Y would dump that entire since-down
+                            // distance -- amplified by swipeGain -- as one
+                            // lump jump the instant the swipe is recognized.
+                            // Basing it on the current position instead
+                            // absorbs the threshold crossing as dead zone,
+                            // so the image starts tracking smoothly from here.
+                            lastMoveWinX = event.windowX
+                            lastMoveWinY = event.windowY
                         }
-                    ]
-                    // The tile is NEVER shifted locally: it only ever shows the
-                    // newest server frame, as-is. An earlier build translated it
-                    // (translationY) by "finger travel minus the server's last
-                    // confirmed scrollY" to hide latency, but frames and the
-                    // scrollY number arrive as separate messages, so a frame that
-                    // already contained the new scroll was shifted AGAIN by the
-                    // stale gap -- the image overshot the finger and snapped back
-                    // (the "dragged" look), and scrollY (CSS px) vs the tile (px
-                    // at zoom z) don't even match units unless z == 1. Build
-                    // 0.1.1.61 retried it properly (each frame tagged with the
-                    // scroll it shows, from Page.screencastFrame metadata) and it
-                    // still looked bad: the leading edge stays blank for a round
-                    // trip (~170 ms via Cloudflare). Removed for good (2026-10-06).
-                    property real startX: 0
-                    property real startY: 0
-                    property real startWinX: 0
-                    property real startWinY: 0
-                    // Position (in window coords) as of the last Move sample that
-                    // actually sent a scroll delta -- deltas sent to
-                    // controller.scrollAt() are incremental since THIS point, not
-                    // since touch-down (see onTouch's Move branch).
-                    property real lastMoveWinX: 0
-                    property real lastMoveWinY: 0
-                    // Finger travel (px) above which a touch is a swipe, not a
-                    // tap. The Q5 is ~330 dpi, so 20px was under normal finger
-                    // jitter and every tap was read as a swipe.
-                    property int swipeThreshold: 50
-                    // Page scrolls this many px per px of finger travel.
-                    property real swipeGain: 2.0
-                    // True once the current drag has crossed swipeThreshold.
-                    property bool scrolling: false
-
-                    // No fade/cross-dissolve here (an earlier version had one): with
-                    // the server pushing real frames continuously over the open
-                    // WebSocket connection (see BrowserController/wsclient.cpp) as
-                    // the page actually repaints, an instant swap on every arriving
-                    // frame IS what a smooth scroll/video looks like -- a fade would
-                    // just soften/blur it. Matches how a real frame-streaming client
-                    // renders (see the Android reference client, BrowserView.java:
-                    // updateFrame() also just swaps the bitmap and invalidates).
-
-                    onTouch: {
-                        if (event.touchType == TouchType.Down) {
-                            startX = event.localX
-                            startY = event.localY
-                            startWinX = event.windowX
-                            startWinY = event.windowY
-                            scrolling = false
-                        } else if (event.touchType == TouchType.Move) {
-                            var mx = event.windowX - startWinX
-                            var my = event.windowY - startWinY
-                            if (!scrolling && (Math.abs(mx) > swipeThreshold || Math.abs(my) > swipeThreshold)) {
-                                scrolling = true
-                                // Baseline at the CURRENT event, not touch-down:
-                                // a real swipe's first reported Move sample can
-                                // already be well past swipeThreshold (a fast
-                                // flick covers many px before the first touch
-                                // event lands), so basing the next delta on
-                                // startWinX/Y would dump that entire since-down
-                                // distance -- amplified by swipeGain -- as one
-                                // lump jump the instant the swipe is recognized.
-                                // Basing it on the current position instead
-                                // absorbs the threshold crossing as dead zone,
-                                // so the image starts tracking smoothly from here.
-                                lastMoveWinX = event.windowX
-                                lastMoveWinY = event.windowY
+                        if (scrolling) {
+                            // Incremental delta since the last sample: the server
+                            // coalesces a burst of these into one actual scroll
+                            // (see scheduleScroll/flushScroll in server.js), so
+                            // there is nothing to batch or throttle here -- every
+                            // Move sample can just be sent straight through.
+                            var dx = lastMoveWinX - event.windowX
+                            var dy = lastMoveWinY - event.windowY
+                            lastMoveWinX = event.windowX
+                            lastMoveWinY = event.windowY
+                            root.barAfterScroll(dy)
+                            if (dx !== 0 || dy !== 0) {
+                                controller.scrollAt(Math.round(startX), Math.round(startY),
+                                                    Math.round(dx * swipeGain), Math.round(dy * swipeGain))
                             }
-                            if (scrolling) {
-                                // Incremental delta since the last sample: the server
-                                // coalesces a burst of these into one actual scroll
-                                // (see scheduleScroll/flushScroll in server.js), so
-                                // there is nothing to batch or throttle here -- every
-                                // Move sample can just be sent straight through.
-                                var dx = lastMoveWinX - event.windowX
-                                var dy = lastMoveWinY - event.windowY
-                                lastMoveWinX = event.windowX
-                                lastMoveWinY = event.windowY
-                                if (dx !== 0 || dy !== 0) {
-                                    controller.scrollAt(Math.round(startX), Math.round(startY),
-                                                        Math.round(dx * swipeGain), Math.round(dy * swipeGain))
-                                }
-                            }
-                        } else if (event.touchType == TouchType.Up) {
-                            if (!scrolling) {
-                                var dx = startWinX - event.windowX
-                                var dy = startWinY - event.windowY
-                                controller.log("tap at " + startX + "," + startY + " travel=" + dx + "," + dy)
-                                controller.tapAt(Math.round(startX), Math.round(startY))
-                            }
+                        }
+                    } else if (event.touchType == TouchType.Up) {
+                        if (!scrolling) {
+                            var dx = startWinX - event.windowX
+                            var dy = startWinY - event.windowY
+                            controller.log("tap at " + startX + "," + startY + " travel=" + dx + "," + dy)
+                            controller.tapAt(Math.round(startX), Math.round(startY))
                         }
                     }
                 }
-
-                Container {
-                    visible: controller.popup
-                    horizontalAlignment: HorizontalAlignment.Fill
-                    verticalAlignment: VerticalAlignment.Top
-                    background: Color.Black
-                    opacity: 0.8
-                    Label {
-                        text: qsTr("Pop-up window: finish signing in, it closes by itself")
-                        multiline: true
-                        textStyle.color: Color.White
-                        textStyle.fontSize: FontSize.XSmall
-                    }
-                }
-
-                ActivityIndicator {
-                    horizontalAlignment: HorizontalAlignment.Center
-                    verticalAlignment: VerticalAlignment.Center
-                    preferredWidth: 100
-                    // controller.loading only covers tracked actions (navigate/tap/
-                    // type/select/tab changes) -- scrolling and zoom refreshes never
-                    // set it, since the live frames arriving on their own already
-                    // are the feedback for those (see browsercontroller.hpp).
-                    running: controller.loading
-                    visible: controller.loading
-                }
-
-                Container {
-                    visible: controller.downloadText.length > 0
-                    horizontalAlignment: HorizontalAlignment.Fill
-                    verticalAlignment: VerticalAlignment.Bottom
-                    background: Color.Black
-                    opacity: 0.85
-                    Label {
-                        text: controller.downloadText
-                        multiline: true
-                        textStyle.color: Color.White
-                        textStyle.fontSize: FontSize.XSmall
-                    }
-                }
-
-                Label {
-                    visible: controller.errorText.length > 0
-                    text: controller.errorText
-                    multiline: true
-                    textStyle.color: Color.Red
-                    horizontalAlignment: HorizontalAlignment.Fill
-                    verticalAlignment: VerticalAlignment.Bottom
-                }
-
             }
+
+            Container {
+                visible: controller.popup
+                horizontalAlignment: HorizontalAlignment.Fill
+                verticalAlignment: VerticalAlignment.Top
+                background: Color.Black
+                opacity: 0.8
+                Label {
+                    text: qsTr("Pop-up window: finish signing in, it closes by itself")
+                    multiline: true
+                    textStyle.color: Color.White
+                    textStyle.fontSize: FontSize.XSmall
+                }
+            }
+
+            // Typing in place (root.startInline): only the field itself takes
+            // touches, everything else reaches the page underneath.
+            Container {
+                id: inlineEdit
+                property bool multi: false
+                visible: false
+                horizontalAlignment: HorizontalAlignment.Fill
+                verticalAlignment: VerticalAlignment.Fill
+                layout: AbsoluteLayout {}
+                touchPropagationMode: TouchPropagationMode.PassThrough
+                overlapTouchPolicy: OverlapTouchPolicy.Allow
+                TextField {
+                    id: inlineField
+                    visible: !inlineEdit.multi
+                    layoutProperties: AbsoluteLayoutProperties { id: inlineFieldPos }
+                    input.submitKey: SubmitKey.Submit
+                    input.onSubmitted: root.finishInline(true)
+                    onTextChanging: if (inlineEdit.visible) controller.typeLive(text)
+                    onFocusedChanged: if (!focused) root.finishInline(false)
+                }
+                TextArea {
+                    id: inlineArea
+                    visible: inlineEdit.multi
+                    layoutProperties: AbsoluteLayoutProperties { id: inlineAreaPos }
+                    onTextChanging: if (inlineEdit.visible) controller.typeLive(text)
+                    onFocusedChanged: if (!focused) root.finishInline(false)
+                }
+            }
+
+            ActivityIndicator {
+                horizontalAlignment: HorizontalAlignment.Center
+                verticalAlignment: VerticalAlignment.Center
+                preferredWidth: 100
+                // controller.loading only covers tracked actions (navigate/tap/
+                // type/select/tab changes) -- scrolling and zoom refreshes never
+                // set it, since the live frames arriving on their own already
+                // are the feedback for those (see browsercontroller.hpp).
+                running: controller.loading
+                visible: controller.loading
+            }
+
+
+        }
+
+        // ---- address bar ----
+        // Slides away while the page scrolls down, back on scrolling up,
+        // at the top of the page and when a new page loads (root.barShown).
+        Container {
+            id: addressBar
+            preferredHeight: root.barHeight
+            maxHeight: root.barHeight
+            horizontalAlignment: HorizontalAlignment.Fill
+            verticalAlignment: VerticalAlignment.Top
+            translationY: root.barShown ? 0 : -root.barHeight
+            rightPadding: 10
+            layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
+            background: controller.darkTheme ? Color.create("#222222") : Color.create("#E6E6E6")
+
+            // Bare glyphs (no button frame), dimmed when there is nowhere to go.
+            ImageButton {
+                defaultImageSource: root.icon("ic_back")
+                pressedImageSource: root.icon("ic_back")
+                disabledImageSource: controller.darkTheme ? "asset:///images/ic_back_off.png" : "asset:///images/ic_back_d_off.png"
+                preferredWidth: 60
+                preferredHeight: 60
+                leftMargin: 10
+                verticalAlignment: VerticalAlignment.Center
+                enabled: controller.canGoBack
+                onClicked: controller.back()
+            }
+            ImageButton {
+                defaultImageSource: root.icon("ic_forward")
+                pressedImageSource: root.icon("ic_forward")
+                disabledImageSource: controller.darkTheme ? "asset:///images/ic_forward_off.png" : "asset:///images/ic_forward_d_off.png"
+                preferredWidth: 60
+                preferredHeight: 60
+                leftMargin: 10
+                verticalAlignment: VerticalAlignment.Center
+                enabled: controller.canGoForward
+                onClicked: controller.forward()
+            }
+            TextField {
+                id: urlField
+                hintText: controller.connected ? qsTr("URL or search") : qsTr("Connecting to the server...")
+                text: controller.currentUrl
+                layoutProperties: StackLayoutProperties { spaceQuota: 1 }
+                // Centred in the 90px bar like the arrows (it sat at the top).
+                verticalAlignment: VerticalAlignment.Center
+                leftMargin: 10
+                input.submitKey: SubmitKey.Go
+                input.onSubmitted: controller.go(urlField.text)
+            }
+        }
+
+        Container {
+            visible: controller.downloadText.length > 0
+            horizontalAlignment: HorizontalAlignment.Fill
+            verticalAlignment: VerticalAlignment.Bottom
+            background: Color.Black
+            opacity: 0.85
+            Label {
+                text: controller.downloadText
+                multiline: true
+                textStyle.color: Color.White
+                textStyle.fontSize: FontSize.XSmall
+            }
+        }
+
+        Label {
+            visible: controller.errorText.length > 0
+            text: controller.errorText
+            multiline: true
+            textStyle.color: Color.Red
+            horizontalAlignment: HorizontalAlignment.Fill
+            verticalAlignment: VerticalAlignment.Bottom
         }
     }
 
