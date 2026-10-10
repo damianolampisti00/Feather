@@ -16,7 +16,7 @@
     </configuration>
     <name>Feather</name>
     <versionNumber>1.2.0</versionNumber>
-    <buildId>21</buildId>
+    <buildId>29</buildId>
     <description>Light web browser for BlackBerry 10: pages are rendered by your own Feather server.</description>
     <author>Feather</author>
     <initialWindow>

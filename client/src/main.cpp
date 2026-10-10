@@ -42,7 +42,10 @@ Q_DECL_EXPORT int main(int argc, char **argv)
     coverQml->setContextProperty("controller", &controller);
     Container *coverRoot = coverQml->createRootObject<Container>();
     if (coverRoot) Application::instance()->setCover(SceneCover::create().content(coverRoot));
-    else bbportLog("[Feather] cover.qml failed to create the Active Frame");
+    else {
+        bbportLog("[Feather] cover.qml failed to create the Active Frame");
+        foreach (const QDeclarativeError &e, coverQml->errors()) bbportLog("[Feather]   " + e.toString());
+    }
 
     return Application::exec();
 }
