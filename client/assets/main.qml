@@ -18,7 +18,7 @@ Page {
         if (barTravel > 40) barShown = false
         else if (barTravel < -40) barShown = true
     }
-    // Refresh/zoom/server/bookmarks live in BB10's own native app menu here
+    // History/zoom/settings/bookmarks/tabs live in BB10's own native app menu here
     // (swipe DOWN from the top bezel to open it -- no button needed, every
     // BB10 app's menu works this way): "A Menu is positioned at the top of
     // the screen and can be accessed by swiping downwards from the top of the
@@ -29,9 +29,9 @@ Page {
         actions: [
             // Icons: Material Symbols (Apache 2.0, see images/README.txt), see root.icon().
             ActionItem {
-                title: qsTr("Refresh")
-                imageSource: root.icon("ic_reload")
-                onTriggered: controller.reload()
+                title: qsTr("History")
+                imageSource: root.icon("ic_history")
+                onTriggered: historySheet.open()
             },
             ActionItem {
                 title: qsTr("Zoom: %1").arg(controller.zoomLabel)
@@ -163,10 +163,12 @@ Page {
         setServerField.text = controller.serverUrl
         setTokenField.text = controller.token
         setThemeDrop.selectedIndex = controller.darkTheme ? 1 : 0
+        setExtensionsToggle.checked = controller.extensionsEnabled
         settingsSheet.open()
     }
     function saveSettings() {
         controller.darkTheme = (setThemeDrop.selectedIndex == 1)
+        controller.extensionsEnabled = setExtensionsToggle.checked
         // Both setters ignore an unchanged value, so saving without touching
         // the server fields doesn't drop and re-open the connection.
         controller.serverUrl = setServerField.text
@@ -505,6 +507,15 @@ Page {
                 input.submitKey: SubmitKey.Go
                 input.onSubmitted: controller.go(urlField.text)
             }
+            ImageButton {
+                defaultImageSource: root.icon("ic_reload")
+                pressedImageSource: root.icon("ic_reload")
+                preferredWidth: 60
+                preferredHeight: 60
+                leftMargin: 10
+                verticalAlignment: VerticalAlignment.Center
+                onClicked: controller.reload()
+            }
         }
 
         Container {
@@ -677,6 +688,66 @@ Page {
             }
         },
         SystemDialog {
+            id: clearHistoryDialog
+            title: qsTr("Clear the history?")
+            body: qsTr("Every page in the list is forgotten. Bookmarks and logins stay.")
+            confirmButton.label: qsTr("Clear")
+            cancelButton.label: qsTr("Cancel")
+            onFinished: {
+                if (value == SystemUiResult.ConfirmButtonSelection) controller.clearVisited()
+            }
+        },
+        // Every page shown, newest first (controller.visitedModel, phone only).
+        Sheet {
+            id: historySheet
+            content: Page {
+                titleBar: TitleBar {
+                    title: qsTr("History")
+                    visibility: ChromeVisibility.Visible
+                    dismissAction: ActionItem {
+                        title: qsTr("Close")
+                        onTriggered: historySheet.close()
+                    }
+                }
+                Container {
+                    layout: StackLayout { orientation: LayoutOrientation.TopToBottom }
+                    horizontalAlignment: HorizontalAlignment.Fill
+                    verticalAlignment: VerticalAlignment.Fill
+
+                    Container {
+                        topPadding: ui.du(1)
+                        leftPadding: ui.du(2)
+                        rightPadding: ui.du(2)
+                        bottomPadding: ui.du(1)
+                        horizontalAlignment: HorizontalAlignment.Fill
+                        Button {
+                            text: qsTr("Clear history")
+                            horizontalAlignment: HorizontalAlignment.Fill
+                            onClicked: clearHistoryDialog.show()
+                        }
+                    }
+                    ListView {
+                        dataModel: controller.visitedModel
+                        layoutProperties: StackLayoutProperties { spaceQuota: 1 }
+                        listItemComponents: [
+                            ListItemComponent {
+                                type: "item"
+                                StandardListItem {
+                                    preferredHeight: ui.du(11)
+                                    title: ListItemData.title
+                                    description: ListItemData.url
+                                }
+                            }
+                        ]
+                        onTriggered: {
+                            controller.openVisitedAt(indexPath[0])
+                            historySheet.close()
+                        }
+                    }
+                }
+            }
+        },
+        SystemDialog {
             id: downloadDialog
             property string dlId: ""
             property string dlName: ""
@@ -750,6 +821,50 @@ Page {
                                 text: qsTr("Web pages follow it too: sites with a dark theme of their own use it, the others are darkened automatically.")
                                 multiline: true
                                 textStyle.fontSize: FontSize.Small
+                            }
+                        }
+
+                        Header {
+                            title: qsTr("Extensions")
+                        }
+                        Container {
+                            leftPadding: 20
+                            rightPadding: 20
+                            topPadding: 20
+                            Container {
+                                layout: StackLayout {
+                                    orientation: LayoutOrientation.LeftToRight
+                                }
+                                Label {
+                                    text: qsTr("Use the server's extensions")
+                                    verticalAlignment: VerticalAlignment.Center
+                                    multiline: true
+                                    layoutProperties: StackLayoutProperties {
+                                        spaceQuota: 1
+                                    }
+                                }
+                                ToggleButton {
+                                    id: setExtensionsToggle
+                                    enabled: controller.serverHasExtensions
+                                    verticalAlignment: VerticalAlignment.Center
+                                }
+                            }
+                            Label {
+                                text: controller.serverHasExtensions
+                                      ? qsTr("Pages open in a browser of your own on the server, with its Chrome extensions (it uses more of the server's memory). Switching reloads the open page; the other tabs are closed.")
+                                      : qsTr("This server has no extensions installed (see server/extensions.js).")
+                                multiline: true
+                                textStyle.fontSize: FontSize.Small
+                            }
+                            Button {
+                                text: qsTr("Open extensions")
+                                visible: setExtensionsToggle.checked && controller.serverHasExtensions
+                                horizontalAlignment: HorizontalAlignment.Fill
+                                onClicked: {
+                                    root.saveSettings()
+                                    settingsSheet.close()
+                                    controller.openExtensions()
+                                }
                             }
                         }
 

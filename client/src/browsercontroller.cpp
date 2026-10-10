@@ -104,6 +104,8 @@ BrowserController::BrowserController(QObject *parent) :
         m_zoom(kDefaultZoom),
         m_popup(false),
         m_darkTheme(false),
+        m_extensionsEnabled(false),
+        m_serverHasExtensions(false),
         m_histIndex(-1),
         m_decodesInFlight(0),
         m_frameSerial(0),
@@ -129,6 +131,7 @@ BrowserController::BrowserController(QObject *parent) :
     m_serverUrl = settings.value("serverUrl", kDefaultServer).toString();
     m_zoom = settings.value("zoom", kDefaultZoom).toDouble();
     m_token = settings.value("token").toString();
+    m_extensionsEnabled = settings.value("extensions", false).toBool();
     // Until the user picks a theme in Impostazioni, follow the one the app
     // started with (the device's default).
     bb::cascades::ThemeSupport *themes = bb::cascades::Application::instance()->themeSupport();
@@ -146,6 +149,14 @@ BrowserController::BrowserController(QObject *parent) :
     m_selectMultiple = false;
     m_bookmarksModel = new bb::cascades::ArrayDataModel(this);
     loadBookmarks();
+    m_visitedModel = new bb::cascades::ArrayDataModel(this);
+    {
+        QByteArray json = QSettings("Feather", "Feather").value("visited").toByteArray();
+        if (!json.isEmpty()) {
+            bb::data::JsonDataAccess jda;
+            m_visitedModel->append(jda.loadFromBuffer(json).toList());
+        }
+    }
     connect(this, SIGNAL(bookmarksChanged()), this, SIGNAL(currentBookmarkedChanged()));
     connect(this, SIGNAL(pageChanged()), this, SIGNAL(currentBookmarkedChanged()));
     connect(this, SIGNAL(historyChanged()), this, SIGNAL(currentBookmarkedChanged()));
@@ -192,6 +203,7 @@ QString BrowserController::currentUrl() const
 
 bb::cascades::DataModel* BrowserController::selectModel() const { return m_selectModel; }
 bb::cascades::DataModel* BrowserController::bookmarksModel() const { return m_bookmarksModel; }
+bb::cascades::DataModel* BrowserController::visitedModel() const { return m_visitedModel; }
 bb::cascades::DataModel* BrowserController::tabsModel() const { return m_tabsModel; }
 
 bool BrowserController::currentBookmarked() const
@@ -244,6 +256,62 @@ void BrowserController::removeBookmarkAt(int index)
     saveBookmarks();
 }
 
+// A page was shown: it goes to the top of the history (an older visit of the
+// same address moves up rather than repeating). Later results for the same
+// page (taps, a title that arrives late) only refresh its title.
+static const int kMaxVisited = 300;
+
+void BrowserController::recordVisit(const QUrl &url, const QString &title)
+{
+    const QString scheme = url.scheme().toLower();
+    if (scheme != "http" && scheme != "https") return;
+    const QString u = QString::fromUtf8(url.toEncoded());
+    const QString t = title.isEmpty() ? u : title;
+    if (m_visitedModel->size() > 0) {
+        const QVariantMap top = m_visitedModel->value(0).toMap();
+        if (top.value("url").toString() == u) {
+            if (top.value("title").toString() == t) return;
+            QVariantMap row = top;
+            row["title"] = t;
+            m_visitedModel->replace(0, row);
+            saveVisited();
+            return;
+        }
+    }
+    for (int i = m_visitedModel->size() - 1; i >= 0; --i) {
+        if (m_visitedModel->value(i).toMap().value("url").toString() == u) m_visitedModel->removeAt(i);
+    }
+    QVariantMap row;
+    row["title"] = t;
+    row["url"] = u;
+    m_visitedModel->insert(0, row);
+    while (m_visitedModel->size() > kMaxVisited) m_visitedModel->removeAt(m_visitedModel->size() - 1);
+    saveVisited();
+}
+
+void BrowserController::saveVisited()
+{
+    QVariantList list;
+    for (int i = 0; i < m_visitedModel->size(); ++i) list.append(m_visitedModel->value(i));
+    bb::data::JsonDataAccess jda;
+    QByteArray buf;
+    jda.saveToBuffer(QVariant(list), &buf);
+    QSettings("Feather", "Feather").setValue("visited", buf);
+}
+
+void BrowserController::openVisitedAt(int index)
+{
+    if (index < 0 || index >= m_visitedModel->size()) return;
+    const QUrl url = QUrl::fromEncoded(m_visitedModel->value(index).toMap().value("url").toString().toUtf8());
+    if (url.isValid()) navigateTo(url, true);
+}
+
+void BrowserController::clearVisited()
+{
+    m_visitedModel->clear();
+    saveVisited();
+}
+
 void BrowserController::openBookmarkAt(int index)
 {
     if (index < 0 || index >= m_bookmarksModel->size()) return;
@@ -256,6 +324,14 @@ void BrowserController::newTab()
     QVariantMap body;
     body["action"] = "newtab";
     sendTrackedAction(body, false);
+}
+
+void BrowserController::openExtensions()
+{
+    QVariantMap body;
+    body["action"] = "newtab";
+    body["url"] = "chrome://extensions";
+    sendTrackedAction(body, true);
 }
 
 void BrowserController::switchTab(const QString &tabId)
@@ -387,6 +463,22 @@ void BrowserController::setDarkTheme(bool dark)
     }
 }
 
+void BrowserController::setExtensionsEnabled(bool on)
+{
+    if (on == m_extensionsEnabled) return;
+    m_extensionsEnabled = on;
+    QSettings("Feather", "Feather").setValue("extensions", on);
+    emit extensionsChanged();
+    // The server switches this session's browser right away (otherwise with
+    // the next action, which carries the setting too); the open page comes
+    // back in it. Tracked, so the result's tab list -- all new -- is applied.
+    if (m_wsConnected) {
+        QVariantMap body;
+        body["action"] = "extensions";
+        sendTrackedAction(body, false);
+    }
+}
+
 void BrowserController::setToken(const QString &token)
 {
     const QString t = token.trimmed();
@@ -418,11 +510,18 @@ QUrl BrowserController::normalizeInput(const QString &raw)
     if (s.isEmpty()) return QUrl();
     if (s.startsWith("http://", Qt::CaseInsensitive) || s.startsWith("https://", Qt::CaseInsensitive))
         return QUrl::fromUserInput(s);
+    // The server browser's extensions: chrome://extensions and their own
+    // pages (the server refuses them when it has no extensions).
+    if (!s.contains(' ') && (s.startsWith("chrome://extensions", Qt::CaseInsensitive)
+                             || s.startsWith("chrome-extension://", Qt::CaseInsensitive)))
+        return QUrl(s, QUrl::TolerantMode);
     // No scheme: something host-like is an address, anything else is a search.
     if (!s.contains(' ') && (s.contains('.') || s.startsWith("localhost")))
         return QUrl::fromUserInput("https://" + s);
-    QUrl search("https://duckduckgo.com/html/");
-    search.addQueryItem("q", s);
+    QUrl search("https://www.google.com/search");
+    // Encoded by hand: Qt 4's addQueryItem leaves '+' as is, which Google
+    // reads as a space ("c++" would become "c  ").
+    search.addEncodedQueryItem("q", QUrl::toPercentEncoding(s));
     return search;
 }
 
@@ -552,6 +651,7 @@ void BrowserController::dispatch(const QVariantMap &bodyIn)
     body["type"] = "action";
     body["zoom"] = m_zoom;
     body["theme"] = m_darkTheme ? "dark" : "light";
+    body["extensions"] = m_extensionsEnabled;
     body["viewHeight"] = kTileHeight;
     // sessionId is not sent per-message: the server already bound this
     // connection to one via the ?sessionId=... on the /ws Upgrade request.
@@ -1584,6 +1684,10 @@ void BrowserController::onWsText(const QByteArray &utf8)
         updateLoadingFlag();
         return;
     }
+    if (type == "hello") {
+        noteServerFeatures(map); // sent on connect, before any page has loaded
+        return;
+    }
     if (type == "result") {
         applyResult(map);
         return;
@@ -1592,6 +1696,16 @@ void BrowserController::onWsText(const QByteArray &utf8)
         onVideoInfo(map);
         return;
     }
+}
+
+// What the server offers (its "hello" on connect, and every result).
+void BrowserController::noteServerFeatures(const QVariantMap &map)
+{
+    if (!map.contains("extensionsAvailable")) return;
+    const bool has = map.value("extensionsAvailable").toBool();
+    if (has == m_serverHasExtensions) return;
+    m_serverHasExtensions = has;
+    emit extensionsChanged();
 }
 
 void BrowserController::applyResult(const QVariantMap &map)
@@ -1617,6 +1731,8 @@ void BrowserController::applyResult(const QVariantMap &map)
                           l.value("w").toInt(), l.value("h").toInt());
         m_links.append(link);
     }
+
+    noteServerFeatures(map);
 
     m_scrollY = map.value("scrollY").toInt();
     m_pageHeight = map.value("pageHeight").toInt();
@@ -1648,6 +1764,7 @@ void BrowserController::applyResult(const QVariantMap &map)
         }
         emit historyChanged();
     }
+    if (tracked && !popup && finalUrl.isValid()) recordVisit(finalUrl, m_title);
 
     emit pageChanged();
 

@@ -140,6 +140,44 @@ computer with the same files (`npm install` there too), then copy
 `sessions/<session id>.json` into the server's `sessions/` folder. That file holds your
 login cookies: treat it like a password.
 
+## 7. Browser extensions
+
+The server's browser can run Chrome extensions: an ad blocker, a cookie-banner
+remover, anything that works on its own in the page. Install them from the Chrome Web
+Store with the extension's ID or its Web Store link, then restart the server:
+
+```
+node extensions.js add ddkjiahejlhfcafbddmgiahcphecmpfh    # uBlock Origin Lite
+node extensions.js add https://chromewebstore.google.com/detail/<name>/<id>
+node extensions.js list
+node extensions.js update                                  # newer versions of all of them
+node extensions.js remove <id>
+```
+
+They go in `server/extensions/` (`EXTENSIONS_DIR`), one folder each; any unpacked
+extension (a folder with a `manifest.json`) can be put there by hand too.
+
+- **On the phone:** each phone chooses in the app's Settings, under Extensions ("Use the
+  server's extensions"; off at first, greyed out while the server has none). Once it is
+  on, "Open extensions" opens `chrome://extensions` in a new tab: there you see them,
+  switch them off or open their options ("Details", then "Extension options"). An
+  extension's own pages also open by address, e.g. `chrome-extension://<id>/options.html`.
+  There is no toolbar, so extensions that only work through their toolbar button are of
+  little use. Switching reloads the open page and closes the other tabs.
+- **Manifest V3 only:** current Chromium no longer runs Manifest V2 extensions (e.g. the
+  original uBlock Origin; uBlock Origin Lite is its V3 version). `list` marks them.
+- **One browser per phone:** Chromium runs extensions only in a persistent profile, so a
+  phone that uses them gets a browser of its own, with its profile in
+  `sessions/<session id>.profile/` (more memory: about one more Chromium per such phone).
+  Phones that don't share one browser, as without extensions. Logins carry over both
+  ways through `sessions/<session id>.json`, which is still kept up to date and still
+  where `login.js` saves.
+- **Which browser:** extensions need a full Chromium. Unless `BROWSER_PATH` or
+  `BROWSER_CHANNEL` says otherwise, the server then uses Playwright's own Chromium
+  (`npx playwright install chromium`), also on Windows; branded Chrome and Edge ignore
+  extensions loaded this way.
+- Pages an extension opens by itself when it first starts (welcome pages) are closed.
+
 ## Settings
 
 Environment variables (all optional):
@@ -150,7 +188,7 @@ Environment variables (all optional):
 | `HOST` | `127.0.0.1` | Listening address (`--lan` = `0.0.0.0`) |
 | `FEATHER_TOKEN` | from `token.txt` | Access token |
 | `BROWSER_PATH` | | A specific Chromium/Chrome executable |
-| `BROWSER_CHANNEL` | `msedge` on Windows | An installed browser: `chrome`, `msedge`; unset elsewhere = Playwright's Chromium |
+| `BROWSER_CHANNEL` | `msedge` on Windows | An installed browser: `chrome`, `msedge`; unset elsewhere (or with extensions) = Playwright's Chromium |
 | `MAX_SESSIONS` | `3` | Phones served at once |
 | `MAX_TABS` | `6` | Tabs per phone |
 | `JPEG_QUALITY` | `40` | Frame quality (higher = sharper and bigger) |
@@ -159,6 +197,8 @@ Environment variables (all optional):
 | `JPEGTRAN_PATH` | `jpegtran` | jpegtran executable |
 | `AUDIO_SINK` | `feather_audio` | Name of the virtual output the page sound is captured from |
 | `YTDLP_PYTHON`, `PARTHDL_PYTHON` | the venvs above | Python with yt-dlp / parth-dl |
+| `EXTENSIONS_DIR` | `extensions/` | Folder of the browser extensions |
+| `EXTENSIONS_CHROME_VERSION` | `150.0.0.0` | Chrome version `extensions.js` tells the Web Store |
 
 A phone's session (its tabs and browser) closes after 10 minutes without activity;
 logins and cookies stay saved in `sessions/`.

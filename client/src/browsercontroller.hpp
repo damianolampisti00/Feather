@@ -100,6 +100,12 @@ class BrowserController : public QObject
     // Light/dark (Impostazioni): the app's Cascades visual style and, through
     // the server, the pages themselves (see applyView in server.js).
     Q_PROPERTY(bool darkTheme READ darkTheme WRITE setDarkTheme NOTIFY themeChanged)
+    // Extensions (Impostazioni): whether this phone's session on the server
+    // runs with the server browser's extensions (sent with every action, see
+    // setExtensionsMode in server.js), and whether the server has any at all
+    // (from its results; false until the first one).
+    Q_PROPERTY(bool extensionsEnabled READ extensionsEnabled WRITE setExtensionsEnabled NOTIFY extensionsChanged)
+    Q_PROPERTY(bool serverHasExtensions READ serverHasExtensions NOTIFY extensionsChanged)
     // True while the server's front tab is a popup (e.g. Google sign-in).
     Q_PROPERTY(bool popup READ popup NOTIFY popupChanged)
     // Progress / result line of the current file download (empty = nothing to show).
@@ -114,6 +120,10 @@ class BrowserController : public QObject
     Q_PROPERTY(bb::cascades::DataModel* selectModel READ selectModel CONSTANT)
     // Saved bookmarks, each row {title, url}. Bind a ListView.dataModel to this.
     Q_PROPERTY(bb::cascades::DataModel* bookmarksModel READ bookmarksModel CONSTANT)
+    // Browsing history (the "History" sheet), newest first, each row
+    // {title, url}: every web page shown, kept on the phone only. Not the
+    // back/forward list (m_history), which is per tab and not saved.
+    Q_PROPERTY(bb::cascades::DataModel* visitedModel READ visitedModel CONSTANT)
     // Whether the current page's URL is already bookmarked.
     // Depends on BOTH the bookmark list and the current page: it used to notify
     // only on list changes, so after saving one page every other page still
@@ -149,6 +159,9 @@ public:
     QString zoomLabel() const;
     bool darkTheme() const { return m_darkTheme; }
     void setDarkTheme(bool dark);
+    bool extensionsEnabled() const { return m_extensionsEnabled; }
+    void setExtensionsEnabled(bool on);
+    bool serverHasExtensions() const { return m_serverHasExtensions; }
     bool popup() const { return m_popup; }
     QString downloadText() const { return m_dlText; }
     QString serverUrl() const { return m_serverUrl; }
@@ -158,6 +171,7 @@ public:
     void setToken(const QString &token);
     bb::cascades::DataModel* selectModel() const;
     bb::cascades::DataModel* bookmarksModel() const;
+    bb::cascades::DataModel* visitedModel() const;
     bool currentBookmarked() const;
     bb::cascades::DataModel* tabsModel() const;
     int tabCount() const { return m_tabCount; }
@@ -204,10 +218,15 @@ public:
     Q_INVOKABLE void addBookmark();
     Q_INVOKABLE void removeBookmarkAt(int index);
     Q_INVOKABLE void openBookmarkAt(int index);
+    // History: open a row of visitedModel, or forget all of it.
+    Q_INVOKABLE void openVisitedAt(int index);
+    Q_INVOKABLE void clearVisited();
     // Tabs: open a new blank one, switch to / close the one with this server-side id
     // (see tabsModel's "id" field -- these ids come from the server, unlike bookmarks'
     // plain row indices, since tabs can be reordered/closed server-side too).
     Q_INVOKABLE void newTab();
+    // A new tab with chrome://extensions, the server browser's extension list.
+    Q_INVOKABLE void openExtensions();
     Q_INVOKABLE void switchTab(const QString &tabId);
     Q_INVOKABLE void closeTab(const QString &tabId);
     // Diagnostics from QML into the on-device log file.
@@ -231,6 +250,7 @@ signals:
     void tokenChanged();
     void zoomChanged();
     void themeChanged();
+    void extensionsChanged();
     void popupChanged();
     void downloadChanged();
     void connectedChanged();
@@ -309,6 +329,7 @@ private:
     void playPageAudio(const QByteArray &data);
     void dispatch(const QVariantMap &body);
     void applyResult(const QVariantMap &map);
+    void noteServerFeatures(const QVariantMap &map);
     void updateLoadingFlag();
 
     // interceptVideo false: load even a video URL as a page (openVideoPage);
@@ -393,6 +414,8 @@ private:
     double m_zoom;
     bool m_popup;
     bool m_darkTheme;
+    bool m_extensionsEnabled;
+    bool m_serverHasExtensions;
     QString m_serverUrl;
     QString m_token;
     QString m_sessionId;
@@ -439,6 +462,9 @@ private:
     bb::cascades::ArrayDataModel *m_bookmarksModel;
     void loadBookmarks();
     void saveBookmarks();
+    bb::cascades::ArrayDataModel *m_visitedModel;
+    void recordVisit(const QUrl &url, const QString &title);
+    void saveVisited();
 
     // Each tab has its own back/forward history; m_history/m_histIndex above are
     // always the ACTIVE tab's. Switching tabs saves the outgoing tab's pair in

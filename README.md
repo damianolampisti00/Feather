@@ -26,7 +26,7 @@ protected by an access token. It is not meant to be a public service.
 ## Features
 
 - Modern sites, logins, web apps: everything runs in desktop-class Chromium.
-- Tabs (up to 6), bookmarks, zoom (1x to 2x), light and dark theme (dark also
+- Tabs (up to 6), bookmarks, history, zoom (1x to 2x), light and dark theme (dark also
   darkens web pages that have no dark theme of their own).
 - Native text input, select boxes, date and time pickers.
 - Downloads saved to the phone's Downloads folder.
@@ -37,6 +37,8 @@ protected by an access token. It is not meant to be a public service.
 - Opens `http:`/`https:` links from other apps.
 - Signing in to Google and other sites that refuse automated browsers: sign in once
   in a normal window on the server (`server/login.js`), the phone reuses that login.
+- Chrome extensions on the server's browser (e.g. an ad blocker), installed from the
+  Chrome Web Store with `server/extensions.js`.
 - English and Italian UI (follows the phone's language).
 
 ## What you need

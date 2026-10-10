@@ -9,6 +9,7 @@ const { loadToken, makeGuard, clientIp } = require('./guard');
 const { startSafeProxy } = require('./safeproxy');
 const { chromium } = require('playwright');
 const { createDeltaEncoder, deltaAvailable } = require('./deltaframes');
+const { listExtensions, launchArgs } = require('./extensions');
 const webVideo = require('./webvideo');
 const pageAudio = require('./pageaudio');
 
@@ -50,52 +51,112 @@ const STATE_DIR = path.join(__dirname, 'sessions');
 fs.mkdirSync(STATE_DIR, { recursive: true });
 const stateFile = (id) => path.join(STATE_DIR, id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) + '.json');
 
+// Browser extensions (extensions.js): a session that wants them (the app's
+// Settings switch, `extensions` in every action) runs a browser of its own
+// on a persistent profile kept here, since Chromium runs extensions only in
+// one; the others share one browser, as without extensions. The .json file
+// stays the reference for a session's cookies and storage either way: it is
+// saved after every action and loaded into the profile at each start, so
+// login.js and switching back and forth keep the logins, and nothing is lost
+// when Chromium dies before writing its own cookie file (only every ~30 s).
+const EXTENSIONS = listExtensions();
+const profileDir = (id) => stateFile(id).replace(/\.json$/, '.profile');
+
+// Every request of every browser goes through the filtering proxy.
+let proxyPromise = null;
+function getProxy() {
+  if (!proxyPromise) {
+    proxyPromise = startSafeProxy({
+      allowPrivate: ALLOW_PRIVATE,
+      ports: [80, 443, 8080, 8443, ...EXTRA_PORTS],
+      onBlocked: (host) => console.warn(`blocked request to ${host}`),
+    }).then((proxy) => { proxyRef.current = proxy; return proxy; });
+  }
+  return proxyPromise;
+}
+
+async function launchOptions() {
+  const proxy = await getProxy();
+  return {
+    headless: true,
+    // --mute-audio (a Playwright default) is dropped when the page sound
+    // goes to the phone (pageaudio.js); the browser then plays into its
+    // own virtual output, never this machine's speakers.
+    ignoreDefaultArgs: pageAudio.browserOptions ? ['--enable-automation', '--mute-audio'] : ['--enable-automation'],
+    ...(pageAudio.browserOptions ? { env: pageAudio.browserOptions.env } : {}),
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      `--proxy-server=http://127.0.0.1:${proxy.port}`,
+      '--proxy-bypass-list=<-loopback>', // loopback must go through the proxy too, to be refused
+      // WebRTC could otherwise open UDP connections that skip the proxy.
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      // Instant (non-animated) wheel scrolling. The client predicts motion
+      // locally and shifts the shown frame to follow the finger (see
+      // scrollAt in browsercontroller / tile.translationY in main.qml), so
+      // Chromium's own smooth-scroll easing only added latency and a second,
+      // competing animation -- which is what made scrolling look strobey.
+      '--disable-smooth-scrolling',
+    ],
+  };
+}
+
+// Starts a browser with `start` (chromium.launch or a launchPersistentContext).
+// The installed Edge/Chrome (BROWSER_CHANNEL=msedge|chrome; default msedge on Windows)
+// is what a person really signs in with, so it matches login.js; if it is
+// missing, fall back to Playwright's bundled Chromium.
+// BROWSER_PATH=/usr/bin/chromium: a specific executable (Linux servers), no lookup.
+// With extensions the default is the full bundled Chromium: Playwright's
+// headless shell can't run them, and branded Chrome/Edge ignore --load-extension.
+function launchWith(start, opts) {
+  if (process.env.BROWSER_PATH) return start({ ...opts, executablePath: process.env.BROWSER_PATH });
+  const bundled = EXTENSIONS.length ? { ...opts, channel: 'chromium' } : opts;
+  const channel = process.env.BROWSER_CHANNEL || (process.platform === 'win32' && !EXTENSIONS.length ? 'msedge' : '');
+  if (!channel) return start(bundled);
+  return start({ ...opts, channel }).catch((e) => {
+    console.warn(`Could not start "${channel}" (${String(e.message).split('\n')[0]}); using bundled Chromium`);
+    return start(bundled);
+  });
+}
+
 let browserPromise = null;
 function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = (async () => {
-      // Every request of the browser goes through the filtering proxy.
-      const proxy = await startSafeProxy({
-        allowPrivate: ALLOW_PRIVATE,
-        ports: [80, 443, 8080, 8443, ...EXTRA_PORTS],
-        onBlocked: (host) => console.warn(`blocked request to ${host}`),
-      });
-      proxyRef.current = proxy;
-      const opts = {
-        headless: true,
-        // --mute-audio (a Playwright default) is dropped when the page sound
-        // goes to the phone (pageaudio.js); the browser then plays into its
-        // own virtual output, never this machine's speakers.
-        ignoreDefaultArgs: pageAudio.browserOptions ? ['--enable-automation', '--mute-audio'] : ['--enable-automation'],
-        ...(pageAudio.browserOptions ? { env: pageAudio.browserOptions.env } : {}),
-        args: [
-          '--disable-blink-features=AutomationControlled',
-          `--proxy-server=http://127.0.0.1:${proxy.port}`,
-          '--proxy-bypass-list=<-loopback>', // loopback must go through the proxy too, to be refused
-          // WebRTC could otherwise open UDP connections that skip the proxy.
-          '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-          // Instant (non-animated) wheel scrolling. The client predicts motion
-          // locally and shifts the shown frame to follow the finger (see
-          // scrollAt in browsercontroller / tile.translationY in main.qml), so
-          // Chromium's own smooth-scroll easing only added latency and a second,
-          // competing animation -- which is what made scrolling look strobey.
-          '--disable-smooth-scrolling',
-        ],
-      };
-      // The installed Edge/Chrome (BROWSER_CHANNEL=msedge|chrome; default msedge on Windows)
-      // is what a person really signs in with, so it matches login.js; if it is
-      // missing, fall back to Playwright's bundled Chromium.
-      // BROWSER_PATH=/usr/bin/chromium: a specific executable (Linux servers), no lookup.
-      if (process.env.BROWSER_PATH) return chromium.launch({ ...opts, executablePath: process.env.BROWSER_PATH });
-      const channel = process.env.BROWSER_CHANNEL || (process.platform === 'win32' ? 'msedge' : '');
-      if (!channel) return chromium.launch(opts);
-      return chromium.launch({ ...opts, channel }).catch((e) => {
-        console.warn(`Could not start "${channel}" (${String(e.message).split('\n')[0]}); using bundled Chromium`);
-        return chromium.launch(opts);
-      });
-    })();
-  }
+  if (!browserPromise) browserPromise = launchOptions().then((opts) => launchWith((o) => chromium.launch(o), opts));
   return browserPromise;
+}
+
+// The browser's version, for the user agent. With extensions there is no
+// shared browser to ask, so a short-lived one is started once.
+let versionPromise = null;
+function browserVersion() {
+  if (!versionPromise) {
+    versionPromise = (async () => {
+      if (!EXTENSIONS.length) return (await getBrowser()).version();
+      const b = await launchWith((o) => chromium.launch(o), { headless: true });
+      try { return b.version(); } finally { await b.close().catch(() => {}); }
+    })();
+    versionPromise.catch(() => { versionPromise = null; });
+  }
+  return versionPromise;
+}
+
+// A session's own browser on its persistent profile, with the extensions.
+async function launchProfile(s, contextOpts) {
+  const dir = profileDir(s.id);
+  const file = stateFile(s.id);
+  const base = await launchOptions();
+  const context = await launchWith(
+    (o) => chromium.launchPersistentContext(dir, o),
+    { ...base, ...contextOpts, args: [...base.args, ...launchArgs(EXTENSIONS)] });
+  if (fs.existsSync(file)) {
+    try {
+      // Only the web origins in the file are touched: the extensions' own
+      // data stays as it is.
+      await context.setStorageState(file);
+    } catch (e) {
+      console.warn(`session ${s.id}: could not bring in the saved cookies (${String(e.message).split('\n')[0]})`);
+    }
+  }
+  return context;
 }
 
 // sessionId -> { id, lastUsed, queue, ctxPromise, tabs, activeTabId, zoom,
@@ -169,18 +230,23 @@ async function saveState(s) {
   } catch (_) {}
 }
 
+// A session's profile stays locked by its browser until that has closed.
+const closingProfiles = new Map();
+
 function closeEntry(id) {
   const s = sessions.get(id);
   if (!s) return;
   sessions.delete(id);
   // Let in-flight work on this session finish before tearing it down
-  s.queue = s.queue.then(async () => {
+  const done = s.queue = s.queue.then(async () => {
     try {
       await saveState(s);
       const ctx = await s.ctxPromise;
       if (ctx) await ctx.close();
     } catch (_) {}
+    if (closingProfiles.get(id) === done) closingProfiles.delete(id);
   });
+  closingProfiles.set(id, done);
 }
 
 function getEntry(id) {
@@ -220,27 +286,42 @@ function trackPage(s, tab, page) {
 
 function getContext(s) {
   if (!s.ctxPromise) {
-    s.ctxPromise = (async () => {
-      const browser = await getBrowser();
+    const own = s.ctxPromise = (async () => {
       // Headless Chromium's default UA says "HeadlessChrome", which Google and
       // others answer with a bot check; present as ordinary desktop Chrome.
-      const major = browser.version().split('.')[0];
+      const major = (await browserVersion()).split('.')[0];
       const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
       const opts = { viewport: VIEWPORT, deviceScaleFactor: 1, userAgent };
-      const file = stateFile(s.id);
-      if (fs.existsSync(file)) opts.storageState = file;
-      const context = await browser.newContext(opts);
+      let context;
+      if (withExtensions(s)) {
+        await closingProfiles.get(s.id);
+        context = await launchProfile(s, opts);
+        // Extensions open a welcome page the first time they meet a profile:
+        // no use on the phone, where it would push the user's page aside.
+        // Pages that open by themselves right after the start, before any
+        // tap, are taken for those and closed.
+        s.welcomeUntil = Date.now() + 8000;
+        // Its browser is the session's own: if that dies, the next request
+        // starts the session over instead of using a dead context.
+        context.on('close', () => { if (s.ctxPromise === own && sessions.get(s.id) === s) sessions.delete(s.id); });
+      } else {
+        const file = stateFile(s.id);
+        if (fs.existsSync(file)) opts.storageState = file;
+        context = await (await getBrowser()).newContext(opts);
+      }
       // A page a site opened becomes a new active tab that remembers the tab
       // it came from (via its opener page; else the active tab, e.g. for
       // rel=noopener links). Pages opened by the server itself (ownNewPage)
       // are tracked where they were created.
-      context.on('page', async (p) => {
+      const onPage = async (p) => {
         if (s.creatingPage) {
           trackPage(s, findTab(s, s.activeTabId), p);
           return;
         }
-        let from = null;
-        try { const opener = await p.opener(); if (opener) from = tabOf(s, opener); } catch (_) {}
+        let opener = null;
+        try { opener = await p.opener(); } catch (_) {}
+        if (!opener && Date.now() < (s.welcomeUntil || 0)) { p.close().catch(() => {}); return; }
+        let from = opener ? tabOf(s, opener) : null;
         if (!from) from = findTab(s, s.activeTabId);
         if (s.tabs.length < MAX_TABS) {
           const tab = newTab(s, from.id);
@@ -249,14 +330,50 @@ function getContext(s) {
         } else {
           trackPage(s, from, p); // tabs full: on top of its opener, as a popup
         }
-      });
+      };
+      context.on('page', onPage);
       const firstTab = newTab(s);
       s.activeTabId = firstTab.id;
-      trackPage(s, firstTab, await ownNewPage(s, context));
+      // A persistent profile's browser starts with a blank page of its own.
+      const [initial, ...early] = context.pages();
+      trackPage(s, firstTab, initial || await ownNewPage(s, context));
+      for (const p of early) onPage(p);
       return context;
     })();
   }
   return s.ctxPromise;
+}
+
+// Whether the session runs with the extensions: what its last action asked
+// for (the app's Settings switch); clients that don't say get them.
+const withExtensions = (s) => EXTENSIONS.length > 0 && s.extensions !== false;
+
+// The app switched the extensions on or off: the session's browser is
+// replaced by the other kind (logins carry over through the .json file). Its
+// tabs close; the page the user was on opens again in the new one, unless the
+// action is about to navigate anyway. Runs inside the session queue.
+async function setExtensionsMode(s, body) {
+  if (typeof body.extensions !== 'boolean') return;
+  const changed = EXTENSIONS.length > 0 && body.extensions !== (s.extensions !== false);
+  s.extensions = body.extensions;
+  const old = s.ctxPromise;
+  if (!changed || !old) return;
+  let reopen = null;
+  try {
+    const tab = findTab(s, s.activeTabId);
+    const p = tab && tab.stack[0];
+    if (p && isHttp(p.url())) reopen = p.url();
+  } catch (_) {}
+  await saveState(s);
+  s.ctxPromise = null;
+  s.tabs = [];
+  s.activeTabId = null;
+  try { await (await old).close(); } catch (_) {}
+  console.log(`session ${s.id}: extensions ${s.extensions ? 'on' : 'off'}`);
+  if (reopen && body.action !== 'navigate') {
+    const page = await activePage(s);
+    await gotoWithRetry(page, reopen).catch(() => {});
+  }
 }
 
 // The active tab (creates the session's first tab on first use).
@@ -293,6 +410,10 @@ setInterval(() => {
 }, 60 * 1000).unref();
 
 const isHttp = (u) => /^https?:\/\//i.test(u);
+// What the address bar may open: web pages and, with extensions installed,
+// their own pages (options, dashboards) and chrome://extensions to manage them.
+const isNavigable = (u, s) => isHttp(u) ||
+  (withExtensions(s) && /^(chrome:\/\/extensions(\/|\?|$)|chrome-extension:\/\/[a-p]{32}\/)/i.test(u));
 
 // After a FAILED navigation Chromium is still loading its own error page; a new
 // goto() issued right then is cancelled ("interrupted by another navigation to
@@ -703,13 +824,15 @@ function resolveInstagram(url) {
 
 async function handle(s, body) {
   const { action, url, scrollY, tapX, tapY, deltaX, deltaY } = body;
+  if (action === 'tap') s.welcomeUntil = 0; // from now on a new page is the user's doing
+  await setExtensionsMode(s, body);
   if (action === 'navigate') await closePopups(s); // a typed URL always targets the main tab
   let page = await usablePage(s, body);
   const z = s.zoom;
   let videoHit = null;
 
   if (action === 'navigate') {
-    if (!url || !isHttp(url)) throw Object.assign(new Error('invalid url'), { status: 400 });
+    if (!url || !isNavigable(url, s)) throw Object.assign(new Error('invalid url'), { status: 400 });
     try {
       await gotoWithRetry(page, url);
     } catch (e) {
@@ -799,6 +922,9 @@ async function handle(s, body) {
       await withInput(page.__mb, () => page.mouse.click(px, py));
       page = await afterInteraction(s, body);
     }
+  } else if (action === 'extensions') {
+    // The Settings switch: setExtensionsMode above did the work; the result
+    // carries the new browser's tabs (the old ones are gone).
   } else if (action === 'refresh') {
     // Nothing to do: applyView() above already re-laid the page out for a
     // new zoom / height; the screenshot below picks it up. A settle refresh
@@ -881,7 +1007,8 @@ async function handle(s, body) {
       await settle(page, 1200);
     } catch (e) { console.warn('select action failed:', String(e.message).split(String.fromCharCode(10))[0]); }
   } else if (action === 'newtab') {
-    const withUrl = !!(url && isHttp(url));
+    if (url && !isNavigable(url, s)) throw Object.assign(new Error('invalid url'), { status: 400 });
+    const withUrl = !!url;
     // A link from another app (the client's openInvokedUrl) brings its url.
     // If the active tab is still blank -- the app was just cold-started by
     // that very link -- it takes the link instead of leaving an empty tab behind.
@@ -1184,6 +1311,9 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
   function sendJson(obj) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   }
+  // What this server offers, right away: the app's Settings needs it before
+  // any page has loaded (results carry it too).
+  sendJson({ type: 'hello', extensionsAvailable: EXTENSIONS.length > 0 });
 
   // Tracks which page's screencast this connection currently rides, so a tab
   // switch / popup open-close moves the subscription instead of leaving it
@@ -1258,6 +1388,7 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
         type: 'result', action: body.action, url: r.url, title: r.title,
         scrollY: r.scrollY, pageHeight: r.pageHeight, links: r.links,
         editable: r.editable, depth: r.depth, download: r.download, tabs: r.tabs, video: r.video,
+        extensionsAvailable: EXTENSIONS.length > 0,
       });
     } catch (e) {
       sendJson({ type: 'error', action: body.action, message: String(e.message || e), status: e.status || 500 });
@@ -1395,6 +1526,9 @@ const server = app.listen(PORT, HOST, () => {
               `Instagram reels ${yes(fs.existsSync(PARTHDL_PYTHON))} (parth-dl), ` +
               `web videos ${yes(webVideo.ytdlpAvailable)} (yt-dlp), ` +
               `page sound ${yes(pageAudio.audioAvailable)} (parec + opusscript)`);
+  if (EXTENSIONS.length) {
+    console.log(`Extensions (one browser per session): ${EXTENSIONS.map((e) => `${e.name} ${e.version}`).join(', ')}`);
+  }
   if (TOKEN.created) {
     console.log('');
     console.log('  New access token (saved in server/token.txt):');

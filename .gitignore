@@ -2,6 +2,7 @@
 server/token.txt
 server/sessions/
 server/downloads/
+server/extensions/
 server/*.log
 server/.venv*/
 *.local.ps1
