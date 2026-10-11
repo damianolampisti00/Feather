@@ -17,6 +17,8 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/error.h"
 
+#include <resolv.h>
+
 namespace {
 
 // How long a single blocking read waits before returning MBEDTLS_ERR_SSL_TIMEOUT
@@ -258,6 +260,9 @@ void WsWorker::run()
         QByteArray portAscii = QByteArray::number(m_url.port(useTls ? 443 : 80));
 
         ret = mbedtls_net_connect(&m_netCtx, hostUtf8.constData(), portAscii.constData(), MBEDTLS_NET_PROTO_TCP);
+        // The resolver reads the DNS servers once per process: after a move to
+        // another Wi-Fi every lookup fails until it reloads them.
+        if (ret == MBEDTLS_ERR_NET_UNKNOWN_HOST) res_init();
         if (ret != 0) {
             closeReason = wasStopped() ? QString() : "Connessione TCP fallita";
             break;

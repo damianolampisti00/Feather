@@ -3,6 +3,7 @@
 
 #ifdef BBPORT_HAVE_NATIVE_TLS
 
+#include <resolv.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -323,6 +324,9 @@ void TlsRequestThread::run()
 
         ret = mbedtls_net_connect(&m_netCtx, hostUtf8.constData(), portAscii.constData(),
                                    MBEDTLS_NET_PROTO_TCP);
+        // The resolver reads the DNS servers once per process: after a move to
+        // another Wi-Fi every lookup fails until it reloads them.
+        if (ret == MBEDTLS_ERR_NET_UNKNOWN_HOST) res_init();
         if (ret != 0 || wasAborted()) {
             netError = wasAborted() ? QNetworkReply::OperationCanceledError
                                      : QNetworkReply::ConnectionRefusedError;
