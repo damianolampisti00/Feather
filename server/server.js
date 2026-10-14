@@ -1245,8 +1245,13 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
   let rttSum = 0, rttCount = 0, sentCount = 0, statsSince = Date.now();
   let deltaCount = 0, sameCount = 0, sentBytes = 0, encodeMs = 0;
   let stallTimer = null;
+  // The app in the background ('pause'): frames wait here (only the newest is
+  // kept) instead of waking the phone for a view nobody looks at -- a page
+  // with anything moving kept the radio and the CPU up ~12 times a second all
+  // night. 'resume' sends the newest frame whole.
+  let paused = false;
   function flushFrame() {
-    if (sendingFrame || pendingFrame === null || ws.readyState !== ws.OPEN) return;
+    if (paused || sendingFrame || pendingFrame === null || ws.readyState !== ws.OPEN) return;
     if (ackFlow && unacked >= FRAME_WINDOW) {
       // Safety valve: a client that stops acking must not freeze the view.
       if (!stallTimer) stallTimer = setTimeout(() => { stallTimer = null; unacked = 0; sentAt.length = 0; flushFrame(); }, 1500);
@@ -1401,6 +1406,16 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
     try { msg = JSON.parse(data.toString()); } catch (_) { return; }
     if (msg.type === 'ping') { sendJson({ type: 'pong' }); return; }
     if (msg.type === 'ack') { onFrameAck(); return; }
+    if (msg.type === 'pause') { paused = true; return; }
+    if (msg.type === 'resume') {
+      paused = false;
+      unacked = 0; sentAt.length = 0;
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+      if (delta) delta.reset();
+      if (!pendingFrame && lastPushed) pendingFrame = lastPushed;
+      flushFrame();
+      return;
+    }
     if (msg.type === 'keyframe') {
       // The client couldn't apply a delta: start over from a whole frame.
       if (delta) delta.reset();

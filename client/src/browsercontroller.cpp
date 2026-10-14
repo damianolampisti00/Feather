@@ -100,6 +100,7 @@ BrowserController::BrowserController(QObject *parent) :
         m_ws(0),
 #endif
         m_wsConnected(false),
+        m_background(false),
         m_loading(false),
         m_zoom(kDefaultZoom),
         m_popup(false),
@@ -121,6 +122,10 @@ BrowserController::BrowserController(QObject *parent) :
         m_scrollY(0),
         m_pageHeight(0)
 {
+    // In the background the server holds the page's frames (see onAppBackground).
+    connect(bb::cascades::Application::instance(), SIGNAL(thumbnail()), this, SLOT(onAppBackground()));
+    connect(bb::cascades::Application::instance(), SIGNAL(invisible()), this, SLOT(onAppBackground()));
+    connect(bb::cascades::Application::instance(), SIGNAL(fullscreen()), this, SLOT(onAppForeground()));
 #ifdef BBPORT_HAVE_NATIVE_TLS
     m_nam = new TlsNetworkAccessManager(this); // downloads only -- see header
 #else
@@ -580,6 +585,7 @@ void BrowserController::onWsOpened()
     setError(QString());
     m_reconnectTimer.stop();
     m_pingTimer.start();
+    if (m_background) m_ws->sendText("{\"type\":\"pause\"}"); // still in the background
     if (m_histIndex >= 0) {
         // Resync after a (re)connect: the server-side session/page is still
         // there (only this socket dropped), so ask for a fresh frame+meta of
@@ -1363,6 +1369,28 @@ void BrowserController::requestKeyframe()
     bbportLog("[Feather:frames] delta could not be applied, asking for a whole frame");
 #ifdef BBPORT_HAVE_NATIVE_TLS
     if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"keyframe\"}");
+#endif
+}
+
+// Minimized (Active Frame) or covered: the page's frames would only wake the
+// phone -- a page with anything moving kept the radio and the CPU up ~12 times
+// a second all night (standbymon, 2026-10-14). The server holds them (only the
+// newest) until the app is back, then sends that one whole. Page sound goes on.
+void BrowserController::onAppBackground()
+{
+    if (m_background) return;
+    m_background = true;
+#ifdef BBPORT_HAVE_NATIVE_TLS
+    if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"pause\"}");
+#endif
+}
+
+void BrowserController::onAppForeground()
+{
+    if (!m_background) return;
+    m_background = false;
+#ifdef BBPORT_HAVE_NATIVE_TLS
+    if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"resume\"}");
 #endif
 }
 

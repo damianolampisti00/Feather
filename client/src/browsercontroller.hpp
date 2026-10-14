@@ -282,6 +282,8 @@ signals:
 
 private slots:
     void sendLive();
+    void onAppBackground();
+    void onAppForeground();
     // The system asked us to open a link (tapped in an email, another app...).
     void onInvoked(const bb::system::InvokeRequest &request);
     void onDownloadData();
@@ -383,6 +385,7 @@ private:
     WsClient *m_ws;
 #endif
     bool m_wsConnected;
+    bool m_background; // thumbnail/invisible: page frames paused on the server
     bool m_loading;
     QList<bool> m_pendingQueue; // one entry per in-flight tracked action, its pushHistory flag
     QTimer m_pingTimer;
