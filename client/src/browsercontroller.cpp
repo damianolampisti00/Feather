@@ -59,6 +59,11 @@ const int kPingIntervalMs = 20000;
 // How long to wait after an unexpected disconnect before trying again --
 // mirrors the Android client's own reconnect backoff.
 const int kReconnectDelayMs = 3000;
+// In the background: frames paused at once, the connection closed after this
+// (a quick look at another app doesn't cost a reconnect), unless the page is
+// playing sound -- then it's checked again later.
+const int kBackgroundCloseMs = 15000;
+const int kBackgroundSoundRecheckMs = 60000;
 // The server locks an address out for 15 minutes after 10 wrong tokens
 // (server/guard.js); while it does, retrying every few seconds is pointless.
 const int kLockedOutRetryMs = 5 * 60 * 1000;
@@ -101,6 +106,7 @@ BrowserController::BrowserController(QObject *parent) :
 #endif
         m_wsConnected(false),
         m_background(false),
+        m_bgDisconnected(false),
         m_loading(false),
         m_zoom(kDefaultZoom),
         m_popup(false),
@@ -126,6 +132,8 @@ BrowserController::BrowserController(QObject *parent) :
     connect(bb::cascades::Application::instance(), SIGNAL(thumbnail()), this, SLOT(onAppBackground()));
     connect(bb::cascades::Application::instance(), SIGNAL(invisible()), this, SLOT(onAppBackground()));
     connect(bb::cascades::Application::instance(), SIGNAL(fullscreen()), this, SLOT(onAppForeground()));
+    m_bgTimer.setSingleShot(true);
+    connect(&m_bgTimer, SIGNAL(timeout()), this, SLOT(onBackgroundIdle()));
 #ifdef BBPORT_HAVE_NATIVE_TLS
     m_nam = new TlsNetworkAccessManager(this); // downloads only -- see header
 #else
@@ -566,6 +574,7 @@ void BrowserController::connectNow()
 
 void BrowserController::reconnectNow()
 {
+    if (m_bgDisconnected) return; // closed on purpose: onAppForeground reconnects
     connectNow();
 }
 
@@ -1375,7 +1384,10 @@ void BrowserController::requestKeyframe()
 // Minimized (Active Frame) or covered: the page's frames would only wake the
 // phone -- a page with anything moving kept the radio and the CPU up ~12 times
 // a second all night (standbymon, 2026-10-14). The server holds them (only the
-// newest) until the app is back, then sends that one whole. Page sound goes on.
+// newest) at once; after kBackgroundCloseMs the connection itself is closed
+// (no frames, no pings: the radio can sleep), unless the page is playing
+// sound. Back in full screen: resume, or reconnect (the server-side session
+// and its tabs are still there; onWsOpened asks for a fresh frame).
 void BrowserController::onAppBackground()
 {
     if (m_background) return;
@@ -1383,13 +1395,37 @@ void BrowserController::onAppBackground()
 #ifdef BBPORT_HAVE_NATIVE_TLS
     if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"pause\"}");
 #endif
+    m_bgTimer.start(kBackgroundCloseMs);
+}
+
+void BrowserController::onBackgroundIdle()
+{
+    if (!m_background) return;
+#ifdef BBPORT_HAVE_NATIVE_TLS
+    if (m_pageAudio && int(m_pageAudio->deviceOpen)) { // the page's sound is playing
+        m_bgTimer.start(kBackgroundSoundRecheckMs);
+        return;
+    }
+    bbportLog("[Feather:ws] in the background: closing the connection");
+    m_bgDisconnected = true;
+    m_reconnectTimer.stop();
+    if (m_ws) m_ws->disconnectFromHost();
+    onWsClosed(QString()); // a clean close: no error, no retry
+#endif
 }
 
 void BrowserController::onAppForeground()
 {
     if (!m_background) return;
     m_background = false;
+    m_bgTimer.stop();
 #ifdef BBPORT_HAVE_NATIVE_TLS
+    if (m_bgDisconnected) {
+        m_bgDisconnected = false;
+        bbportLog("[Feather:ws] back in full screen: reconnecting");
+        connectNow();
+        return;
+    }
     if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"resume\"}");
 #endif
 }
