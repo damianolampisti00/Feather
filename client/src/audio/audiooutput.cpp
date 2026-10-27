@@ -1,3 +1,4 @@
+#include <limits.h>
 #include "audiooutput.hpp"
 
 #include <QByteArray>
@@ -94,7 +95,9 @@ void AudioOutput::run()
     const int maxBytes = kMaxMs * kBytesPerMs;
     while (!m_stop) {
         // Idle: the device stays closed until a start buffer has arrived.
-        if (!m_source->waitFor(startBytes, 200)) continue;
+        // No timeout: requestStop() wakes the wait. Polling every 200 ms woke
+        // the phone 5 times a second for as long as the app was open.
+        if (!m_source->waitFor(startBytes, ULONG_MAX)) continue;
 
         unsigned int audioman = 0;
         int frag = 0;
@@ -106,7 +109,8 @@ void AudioOutput::run()
             continue;
         }
         deviceOpen = 1;
-        QByteArray buffer(frag, 0);
+        QByteArray buffer(frag, 0), inbuf;
+        double acc = 0; // fractional input frames carried between fragments
         bool prebuffering = false;
         QElapsedTimer starved; // since the ring ran dry
         starved.invalidate();
@@ -122,6 +126,7 @@ void AudioOutput::run()
                 }
                 prebuffering = false;
                 starved.invalidate();
+                acc = 0;
             }
             // Bounded latency: a burst, or the sender's clock running fast.
             while (m_source->level() > maxBytes) {
@@ -135,8 +140,35 @@ void AudioOutput::run()
                     continue;
                 }
             }
-            const int got = m_source->read(buffer.data(), frag);
-            if (got < frag) memset(buffer.data() + got, 0, frag - got);
+            // Playback speed follows the ring level, at most +-0.5% (not
+            // audible), with linear interpolation, as RetroArch does (and the
+            // 3DS streaming client on this phone, 2026-10-13): the server's
+            // capture clock and the phone's DAC never run at exactly the same
+            // rate, so without this the ring slowly fills (latency grows until
+            // kMaxMs drops audio) or empties (gaps).
+            const int nOut = frag / 4;
+            const double target = startBytes;
+            const double r = qBound(0.995, 1.0 + 0.005 * (m_source->level() - target) / (target * 0.6), 1.005);
+            acc += nOut * r;
+            const int nIn = int(acc);
+            acc -= nIn;
+            const int want = (nIn + 1) * 4; // one more frame to interpolate towards
+            if (inbuf.size() < want) inbuf.resize(want);
+            if (m_source->peek(inbuf.data(), want) == want) {
+                const qint16 *in = reinterpret_cast<const qint16 *>(inbuf.constData());
+                qint16 *out = reinterpret_cast<qint16 *>(buffer.data());
+                for (int k = 0; k < nOut; ++k) {
+                    const double x = double(k) * nIn / nOut;
+                    const int i = int(x);
+                    const double f = x - i;
+                    out[2 * k] = qint16(in[2 * i] + (in[2 * i + 2] - in[2 * i]) * f);
+                    out[2 * k + 1] = qint16(in[2 * i + 1] + (in[2 * i + 3] - in[2 * i + 1]) * f);
+                }
+                m_source->skip(nIn * 4);
+            } else { // nearly dry: play what there is
+                const int got = m_source->read(buffer.data(), frag);
+                if (got < frag) memset(buffer.data() + got, 0, frag - got);
+            }
             const ssize_t n = snd_pcm_plugin_write(pcm, buffer.constData(), frag);
             if (n < frag) recover(pcm, &underruns);
         }

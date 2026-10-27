@@ -11,8 +11,9 @@
 // libasound, as media (the audio manager's "multimedia" type: headphones or
 // speaker, the media volume keys, paused by calls).
 //
-// The ring is the jitter buffer: playback starts once kStartMs are queued and
-// keeps the level under kMaxMs. When the stream stops (pause, end of the
+// The ring is the jitter buffer: playback starts once kStartMs are queued, the
+// playback speed (+-0.5%) keeps the level around kStartMs, and kMaxMs is the
+// hard limit. When the stream stops (pause, end of the
 // queue) the device runs dry and, after kReleaseMs, is closed so other apps
 // get the audio back; new data reopens it.
 class AudioOutput : public QThread

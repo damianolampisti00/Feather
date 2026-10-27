@@ -49,6 +49,21 @@ public:
         return readLocked(out, n);
     }
 
+    // Copies up to n bytes without consuming them; returns how many.
+    int peek(char *out, int n) const
+    {
+        QMutexLocker lock(&m_mutex);
+        n = qMin(n, m_size);
+        const int cap = m_buf.size();
+        for (int done = 0, at = m_head; done < n;) {
+            const int chunk = qMin(n - done, cap - at);
+            memcpy(out + done, m_buf.constData() + at, chunk);
+            done += chunk;
+            at = (at + chunk) % cap;
+        }
+        return n;
+    }
+
     // Discards up to n bytes (playback drift control).
     int skip(int n)
     {
