@@ -57,6 +57,7 @@ private:
 
     QMutex m_sendMutex;
     QList<QByteArray> m_sendQueue;
+    int m_wakePipe[2]; // enqueueRaw -> run(): a message is waiting
 
     mbedtls_net_context m_netCtx;
 };

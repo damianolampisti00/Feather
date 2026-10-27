@@ -4,6 +4,10 @@
 #ifdef BBPORT_HAVE_NATIVE_TLS
 
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <QCoreApplication>
 #include <QMutexLocker>
@@ -22,12 +26,17 @@
 namespace {
 
 // How long a single blocking read waits before returning MBEDTLS_ERR_SSL_TIMEOUT
-// so the loop can check the outgoing queue and the stop flag. Small enough
-// that a queued outgoing message (a tap, a scroll delta, ...) never waits
-// longer than this to actually go out; not busy-waiting since the wait
-// itself is a real blocking select() inside mbedTLS (mbedtls_net_recv_timeout),
-// not a spin loop -- see net_sockets.h.
+// during the connect/upgrade phase, so the loop can check the stop flag; not
+// busy-waiting since the wait itself is a real blocking select() inside
+// mbedTLS (mbedtls_net_recv_timeout), not a spin loop -- see net_sockets.h.
 const uint32_t kReadTimeoutMs = 50;
+// Once connected, the pump waits in its own select() on the socket AND a wake
+// pipe (enqueueRaw writes to it), so a queued message (a tap, a scroll delta,
+// a frame ack) goes out at once. Until 2026-10-13 it waited in 50 ms read
+// slices, which held every outgoing message back by 25 ms on average. Reads
+// then only wait this long for the rest of a TLS record, so a frame that
+// trickles in can't hold a send back either.
+const uint32_t kPumpReadTimeoutMs = 5;
 // Overall deadline for connect + TLS handshake + HTTP Upgrade; past this the
 // worker gives up and reports a failure instead of hanging forever.
 const int kConnectTimeoutMs = 15000;
@@ -45,12 +54,13 @@ struct WsIo {
     bool tls;
     mbedtls_net_context *net;
     mbedtls_ssl_context *ssl;
+    uint32_t timeoutMs; // plain TCP reads; TLS reads use the ssl config's
 };
 
 int ioRead(WsIo &io, unsigned char *buf, size_t len)
 {
     if (io.tls) return mbedtls_ssl_read(io.ssl, buf, len);
-    return mbedtls_net_recv_timeout(io.net, buf, len, kReadTimeoutMs);
+    return mbedtls_net_recv_timeout(io.net, buf, len, io.timeoutMs);
 }
 
 int ioWrite(WsIo &io, const unsigned char *buf, size_t len)
@@ -187,11 +197,21 @@ WsWorker::WsWorker(const QUrl &url, const QString &token, QObject *parent) :
         m_stopped(false)
 {
     mbedtls_net_init(&m_netCtx);
+    // wakes run()'s select() when a message is queued; non-blocking, so a
+    // full pipe (the worker is already awake then) never blocks the UI thread
+    if (pipe(m_wakePipe) == 0) {
+        fcntl(m_wakePipe[0], F_SETFL, O_NONBLOCK);
+        fcntl(m_wakePipe[1], F_SETFL, O_NONBLOCK);
+    } else {
+        m_wakePipe[0] = m_wakePipe[1] = -1;
+    }
 }
 
 WsWorker::~WsWorker()
 {
     mbedtls_net_free(&m_netCtx);
+    if (m_wakePipe[0] >= 0) close(m_wakePipe[0]);
+    if (m_wakePipe[1] >= 0) close(m_wakePipe[1]);
 }
 
 void WsWorker::requestStop()
@@ -219,6 +239,11 @@ void WsWorker::enqueueRaw(const QByteArray &frameBytes)
 {
     QMutexLocker locker(&m_sendMutex);
     m_sendQueue.append(frameBytes);
+    locker.unlock();
+    if (m_wakePipe[1] >= 0) {
+        char one = 1;
+        if (write(m_wakePipe[1], &one, 1) < 0) {} // EAGAIN: already pending
+    }
 }
 
 void WsWorker::run()
@@ -239,6 +264,7 @@ void WsWorker::run()
     io.tls = useTls;
     io.net = &m_netCtx;
     io.ssl = &ssl;
+    io.timeoutMs = kReadTimeoutMs;
 
     bool haveSsl = false;
     QString closeReason = QCoreApplication::translate("WsClient", "Connection failed");
@@ -377,6 +403,8 @@ void WsWorker::run()
 
         // --- Connected: notify the UI thread, then pump frames until stopped/closed ---
         emit workerOpened();
+        io.timeoutMs = kPumpReadTimeoutMs;
+        if (useTls) mbedtls_ssl_conf_read_timeout(&conf, kPumpReadTimeoutMs);
 
         bool sawCloseFrame = false;
         for (;;) {
@@ -390,6 +418,27 @@ void WsWorker::run()
                 }
             }
             if (wasStopped()) { closeReason.clear(); break; }
+
+            // Sleep until the server sends something or the UI queues a
+            // message (wake pipe). Bytes mbedTLS already holds decrypted
+            // don't show up on the socket, so they skip the wait.
+            if (!(useTls && mbedtls_ssl_check_pending(&ssl))) {
+                fd_set rs;
+                FD_ZERO(&rs);
+                FD_SET(m_netCtx.fd, &rs);
+                FD_SET(m_wakePipe[0], &rs);
+                struct timeval tv = { 1, 0 }; // the stop flag, at worst
+                int r = select(qMax(m_netCtx.fd, m_wakePipe[0]) + 1, &rs, 0, 0, &tv);
+                if (r < 0 && errno != EINTR) {
+                    closeReason = wasStopped() ? QString() : QCoreApplication::translate("WsClient", "Connection closed by the server");
+                    break;
+                }
+                if (r > 0 && FD_ISSET(m_wakePipe[0], &rs)) {
+                    char drain[64];
+                    while (read(m_wakePipe[0], drain, sizeof(drain)) > 0) {}
+                }
+                if (r <= 0 || !FD_ISSET(m_netCtx.fd, &rs)) continue; // send what was queued
+            }
 
             {
                 int n = readMore(io, recvBuf);
