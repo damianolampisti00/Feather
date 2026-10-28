@@ -15,8 +15,8 @@
        <asset path="x86/o-g/Feather" entry="true" type="Qnx/Elf">Feather</asset>
     </configuration>
     <name>Feather</name>
-    <versionNumber>1.2.2</versionNumber>
-    <buildId>32</buildId>
+    <versionNumber>1.2.3</versionNumber>
+    <buildId>35</buildId>
     <description>Light web browser for BlackBerry 10: pages are rendered by your own Feather server.</description>
     <author>Feather</author>
     <initialWindow>
