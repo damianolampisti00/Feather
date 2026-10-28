@@ -1430,9 +1430,14 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
       const url = String(msg.url || '');
       if (msg.web && isHttp(url)) { resolveWeb(url, String(msg.pageUrl || url)); return; }
       if (!isInstagramVideoUrl(url)) { sendJson({ type: 'videoInfo', url, ok: false, reason: 'unsupported url' }); return; }
-      resolveInstagram(url).then((r) => {
-        if (!r.ok) console.warn(`[video] ${url}: ${r.reason}`);
-        sendJson({ ...r, type: 'videoInfo', url, videoUrl: r.url });
+      resolveInstagram(url).then(async (r) => {
+        if (!r.ok) {
+          console.warn(`[video] ${url}: ${r.reason}`);
+          r = await resolveInstagramLoggedIn(url);
+          if (!r.ok) console.warn(`[video] ${url} (session): ${r.reason}`);
+        }
+        sendJson({ type: 'videoInfo', url, ok: r.ok, reason: r.reason, width: r.width, height: r.height,
+          title: r.title, videoUrl: r.url });
       });
       return;
     }
@@ -1446,6 +1451,20 @@ wss.on('connection', (ws, sessionId, flow, peerIp) => {
     if (scrollTimer) { clearTimeout(scrollTimer); flushScroll(); }
     runAction(body);
   });
+
+  // Plan B for a reel parth-dl can't get: it asks anonymously, and Instagram
+  // answers 401 to most reels that way now (and always to age/region-limited
+  // ones). yt-dlp with this session's cookies sees what the user, logged in
+  // in the browser, sees. Its CDN URL is still not IP-bound: no relay.
+  async function resolveInstagramLoggedIn(url) {
+    try {
+      const ctx = await getContext(getEntry(sessionId));
+      const r = await webVideo.resolveWebVideo(ctx, null, url, url);
+      return r.ok && r.protocol !== 'file' ? { ok: false, reason: `${r.protocol} only` } : r;
+    } catch (e) {
+      return { ok: false, reason: String(e.message || e) };
+    }
+  }
 
   // A video in an ordinary page (see webvideo.js): yt-dlp or the page itself
   // finds the stream; the phone gets it direct when it shares this server's
