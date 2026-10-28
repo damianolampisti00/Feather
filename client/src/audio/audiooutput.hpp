@@ -15,7 +15,8 @@
 // The ring is the jitter buffer: playback starts once kStartMs are queued and
 // keeps the level under kMaxMs. When the stream stops (pause, end of the
 // queue) the device runs dry and, after kReleaseMs, is closed so other apps
-// get the audio back; new data reopens it.
+// get the audio back; new data reopens it. Muted (the app in the
+// background), whatever is queued is dropped and the device closed at once.
 class AudioOutput : public QThread
 {
     Q_OBJECT
@@ -32,6 +33,7 @@ public:
 
     explicit AudioOutput(AudioRing *source, QObject *parent = 0);
     void requestStop() { m_stop = 1; m_source->wakeReaders(); }
+    void setMuted(bool on) { m_muted = on ? 1 : 0; m_source->wakeReaders(); }
     QString error() const { return m_error; }
 
     // Stats, for the log.
@@ -45,6 +47,7 @@ protected:
 private:
     AudioRing *m_source;
     QAtomicInt m_stop;
+    QAtomicInt m_muted;
     QString m_error;
 };
 

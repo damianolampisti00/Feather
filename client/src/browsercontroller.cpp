@@ -59,11 +59,10 @@ const int kPingIntervalMs = 20000;
 // How long to wait after an unexpected disconnect before trying again --
 // mirrors the Android client's own reconnect backoff.
 const int kReconnectDelayMs = 3000;
-// In the background: frames paused at once, the connection closed after this
-// (a quick look at another app doesn't cost a reconnect), unless the page is
-// playing sound -- then it's checked again later.
+// In the background: frames paused and the page's sound muted at once, the
+// connection closed after this (a quick look at another app doesn't cost a
+// reconnect).
 const int kBackgroundCloseMs = 15000;
-const int kBackgroundSoundRecheckMs = 60000;
 // The server locks an address out for 15 minutes after 10 wrong tokens
 // (server/guard.js); while it does, retrying every few seconds is pointless.
 const int kLockedOutRetryMs = 5 * 60 * 1000;
@@ -1052,7 +1051,7 @@ void BrowserController::setError(const QString &e)
 // start buffer (and gives the audio device back after a while).
 void BrowserController::playPageAudio(const QByteArray &data)
 {
-    if (!m_opus) return;
+    if (!m_opus || m_background) return; // muted in the background
     const int n = opus_decode(m_opus, reinterpret_cast<const unsigned char *>(data.constData()) + 8,
                               data.size() - 8, reinterpret_cast<opus_int16 *>(m_opusPcm.data()), 5760, 0);
     if (n > 0) m_pageAudioRing->write(m_opusPcm.constData(), n * 4);
@@ -1384,14 +1383,16 @@ void BrowserController::requestKeyframe()
 // Minimized (Active Frame) or covered: the page's frames would only wake the
 // phone -- a page with anything moving kept the radio and the CPU up ~12 times
 // a second all night (standbymon, 2026-10-14). The server holds them (only the
-// newest) at once; after kBackgroundCloseMs the connection itself is closed
-// (no frames, no pings: the radio can sleep), unless the page is playing
-// sound. Back in full screen: resume, or reconnect (the server-side session
-// and its tabs are still there; onWsOpened asks for a fresh frame).
+// newest) at once, and the page's sound stops (the user didn't want a page
+// playing on behind their back, 2026-10-28); after kBackgroundCloseMs the
+// connection itself is closed (no frames, no pings: the radio can sleep).
+// Back in full screen: resume, or reconnect (the server-side session and its
+// tabs are still there; onWsOpened asks for a fresh frame).
 void BrowserController::onAppBackground()
 {
     if (m_background) return;
     m_background = true;
+    if (m_pageAudio) m_pageAudio->setMuted(true);
 #ifdef BBPORT_HAVE_NATIVE_TLS
     if (m_ws && m_wsConnected) m_ws->sendText("{\"type\":\"pause\"}");
 #endif
@@ -1402,10 +1403,6 @@ void BrowserController::onBackgroundIdle()
 {
     if (!m_background) return;
 #ifdef BBPORT_HAVE_NATIVE_TLS
-    if (m_pageAudio && int(m_pageAudio->deviceOpen)) { // the page's sound is playing
-        m_bgTimer.start(kBackgroundSoundRecheckMs);
-        return;
-    }
     bbportLog("[Feather:ws] in the background: closing the connection");
     m_bgDisconnected = true;
     m_reconnectTimer.stop();
@@ -1419,6 +1416,7 @@ void BrowserController::onAppForeground()
     if (!m_background) return;
     m_background = false;
     m_bgTimer.stop();
+    if (m_pageAudio) m_pageAudio->setMuted(false);
 #ifdef BBPORT_HAVE_NATIVE_TLS
     if (m_bgDisconnected) {
         m_bgDisconnected = false;

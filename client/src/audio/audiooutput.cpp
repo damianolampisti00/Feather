@@ -115,7 +115,7 @@ void recover(snd_pcm_t *pcm, QAtomicInt *underruns)
 } // namespace
 
 AudioOutput::AudioOutput(AudioRing *source, QObject *parent) :
-        QThread(parent), m_source(source), m_stop(0)
+        QThread(parent), m_source(source), m_stop(0), m_muted(0)
 {
 }
 
@@ -126,6 +126,10 @@ void AudioOutput::run()
     while (!m_stop) {
         // Idle: the device stays closed until a start buffer has arrived.
         if (!m_source->waitFor(startBytes, 200)) continue;
+        if (m_muted) {
+            m_source->skip(m_source->level());
+            continue;
+        }
 
         unsigned int audioman = 0;
         int frag = 0;
@@ -147,6 +151,10 @@ void AudioOutput::run()
         routeChecked.start();
 
         while (!m_stop) {
+            if (m_muted) {
+                m_source->skip(m_source->level());
+                break;
+            }
             if (routeChecked.elapsed() > 1000) {
                 routeChecked.restart();
                 const QByteArray now = routedPath();
