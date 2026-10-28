@@ -4,7 +4,10 @@
 #include <QDebug>
 #include <QElapsedTimer>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/asoundlib.h>
 #include <audio/audio_manager_routing.h>
 
@@ -13,19 +16,37 @@ namespace {
 const int kFragMs = 20;
 const int kFragBytes = AudioOutput::kBytesPerMs * kFragMs; // 3840
 
-snd_pcm_t *openDevice(unsigned int *audioman, int *fragBytes, QString *error)
+// The device the audio router sends media to right now: "path" in its PPS
+// object, /dev/snd/a2dpp with a Bluetooth headset, /dev/snd/pcmPreferredp
+// for the speaker (what mm_renderer plays into). Neither the "preferred"
+// PCM nor the name "default" follow it: on 2026-10-28 both played on the
+// speaker, at full volume, with a Bluetooth headset connected.
+QByteArray routedPath()
+{
+    char buf[512];
+    const int fd = ::open("/pps/services/audio/devices/default", O_RDONLY);
+    if (fd < 0) return QByteArray();
+    const ssize_t n = ::read(fd, buf, sizeof buf - 1);
+    ::close(fd);
+    if (n <= 0) return QByteArray();
+    buf[n] = 0;
+    const char *p = strstr(buf, "\npath::");
+    if (!p) return QByteArray();
+    p += 7;
+    return QByteArray(p, strcspn(p, "\n"));
+}
+
+snd_pcm_t *openDevice(const QByteArray &path, unsigned int *audioman, int *fragBytes, QString *error)
 {
     snd_pcm_t *pcm = 0;
     *audioman = 0;
-    // "defaultp", like mm_renderer: the routed device, which follows the
-    // current output (Bluetooth A2DP, headphones, speaker) and the media
-    // volume. The "preferred" PCM is the phone's own codec: on 2026-10-28 it
-    // played on the speaker at 100% with a Bluetooth headset connected, deaf
-    // to the volume keys.
-    char name[] = "/dev/snd/defaultp";
-    int rc = audio_manager_snd_pcm_open_name(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, name, SND_PCM_OPEN_PLAYBACK);
+    int rc = -ENOENT;
+    if (!path.isEmpty()) {
+        QByteArray name = path;
+        rc = audio_manager_snd_pcm_open_name(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, name.data(), SND_PCM_OPEN_PLAYBACK);
+    }
     if (rc < 0) {
-        qWarning() << "[Feather:audio] defaultp:" << snd_strerror(rc) << "- trying the preferred device";
+        qWarning() << "[Feather:audio]" << path << snd_strerror(rc) << "- trying the preferred device";
         int card = -1, device = 0;
         rc = audio_manager_snd_pcm_open_preferred(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, &card, &device,
                                                   SND_PCM_OPEN_PLAYBACK);
@@ -109,19 +130,28 @@ void AudioOutput::run()
         unsigned int audioman = 0;
         int frag = 0;
         m_error.clear();
-        snd_pcm_t *pcm = openDevice(&audioman, &frag, &m_error);
+        const QByteArray path = routedPath();
+        snd_pcm_t *pcm = openDevice(path, &audioman, &frag, &m_error);
         if (!pcm) {
             qWarning() << "[Feather:audio]" << m_error;
             msleep(1000);
             continue;
         }
+        qDebug() << "[Feather:audio] playing on" << path;
         deviceOpen = 1;
         QByteArray buffer(frag, 0);
         bool prebuffering = false;
         QElapsedTimer starved; // since the ring ran dry
         starved.invalidate();
+        QElapsedTimer routeChecked; // a headset connected or gone: reopen on the new path
+        routeChecked.start();
 
         while (!m_stop) {
+            if (routeChecked.elapsed() > 1000) {
+                routeChecked.restart();
+                const QByteArray now = routedPath();
+                if (!now.isEmpty() && now != path) break;
+            }
             if (prebuffering) {
                 // Ran dry (pause, end of the queue, a slow network): wait for
                 // a start buffer again, without writing; the device stops by

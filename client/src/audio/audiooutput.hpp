@@ -8,8 +8,9 @@
 #include "audioring.hpp"
 
 // Plays the decoded stream (S16LE, 48 kHz stereo) from an AudioRing through
-// libasound, as media (the audio manager's "multimedia" type: headphones or
-// speaker, the media volume keys, paused by calls).
+// libasound, as media (the audio manager's "multimedia" type: the media
+// volume keys, paused by calls), on the device the audio router currently
+// uses (Bluetooth, headphones, speaker), reopened when that changes.
 //
 // The ring is the jitter buffer: playback starts once kStartMs are queued and
 // keeps the level under kMaxMs. When the stream stops (pause, end of the
