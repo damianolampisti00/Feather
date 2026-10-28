@@ -16,10 +16,20 @@ const int kFragBytes = AudioOutput::kBytesPerMs * kFragMs; // 3840
 snd_pcm_t *openDevice(unsigned int *audioman, int *fragBytes, QString *error)
 {
     snd_pcm_t *pcm = 0;
-    int card = -1, device = 0;
     *audioman = 0;
-    int rc = audio_manager_snd_pcm_open_preferred(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, &card, &device,
+    // "defaultp", like mm_renderer: the routed device, which follows the
+    // current output (Bluetooth A2DP, headphones, speaker) and the media
+    // volume. The "preferred" PCM is the phone's own codec: on 2026-10-28 it
+    // played on the speaker at 100% with a Bluetooth headset connected, deaf
+    // to the volume keys.
+    char name[] = "/dev/snd/defaultp";
+    int rc = audio_manager_snd_pcm_open_name(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, name, SND_PCM_OPEN_PLAYBACK);
+    if (rc < 0) {
+        qWarning() << "[Feather:audio] defaultp:" << snd_strerror(rc) << "- trying the preferred device";
+        int card = -1, device = 0;
+        rc = audio_manager_snd_pcm_open_preferred(AUDIO_TYPE_MULTIMEDIA, &pcm, audioman, &card, &device,
                                                   SND_PCM_OPEN_PLAYBACK);
+    }
     if (rc < 0) {
         *error = QString("open: %1").arg(snd_strerror(rc));
         return 0;
